@@ -28,6 +28,99 @@ SECTION_TITLES = {
 }
 
 
+# The screen paints its own colours instead of inheriting them. A notebook
+# output cell can be light or dark depending on the operator's theme, and a
+# verdict that reads clearly in one and washes out in the other is a verdict
+# nobody trusts. Every surface below sets both its background and its ink.
+FONT = "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,sans-serif"
+INK = "#16181d"
+MUTED = "#5b6270"
+LINE = "#e4e7ec"
+PAPER = "#ffffff"
+
+# (ink, fill) per tone. Zero counts deliberately render in the neutral tone:
+# a red "0 blocked" pulls the eye to the one number that needs no attention.
+TONE = {
+    "ok": ("#0f7a43", "#e9f6ef"),
+    "warn": ("#8a5a0b", "#fdf4e3"),
+    "bad": ("#a32d2d", "#fbecec"),
+    "info": ("#39414f", "#eef1f5"),
+    "none": ("#7b8290", "#f4f5f7"),
+}
+
+
+def _tone(name):
+    return TONE.get(name, TONE["info"])
+
+
+def _shell(inner):
+    """One wrapper so every block on the screen shares a width and a font."""
+    return ('<div style="font-family:{font};max-width:820px;color:{ink};'
+            'font-size:14px;line-height:1.55">{inner}</div>').format(
+                font=FONT, ink=INK, inner=inner)
+
+
+def _stat(label, value, tone):
+    """One number, large, with its meaning under it."""
+    ink, fill = _tone(tone if value else "none")
+    return ('<div style="display:inline-block;vertical-align:top;'
+            'background:{fill};border-radius:6px;padding:12px 16px;'
+            'margin:0 8px 8px 0;min-width:132px">'
+            '<div style="font-size:11px;letter-spacing:.06em;'
+            'text-transform:uppercase;color:{ink};opacity:.85">{label}</div>'
+            '<div style="font-size:26px;font-weight:600;color:{ink};'
+            'margin-top:2px">{value:,}</div></div>').format(
+                fill=fill, ink=ink, label=html.escape(label), value=value)
+
+
+def _panel(body, tone="info"):
+    ink, _fill = _tone(tone)
+    return ('<div style="background:{paper};border:1px solid {line};'
+            'border-left:4px solid {ink};border-radius:6px;padding:16px 20px;'
+            'margin:10px 0">{body}</div>').format(
+                paper=PAPER, line=LINE, ink=ink, body=body)
+
+
+def _title(text):
+    return ('<div style="font-size:17px;font-weight:600;margin-bottom:12px">'
+            '{}</div>').format(html.escape(text))
+
+
+def _note(text):
+    return ('<div style="font-size:13px;color:{muted};margin-top:8px">{text}'
+            '</div>').format(muted=MUTED, text=html.escape(text))
+
+
+def render_notice(text, tone="info"):
+    """A single paragraph that has to be read, not skimmed past."""
+    return _shell(_panel(
+        '<div style="font-size:14px">{}</div>'.format(html.escape(text)),
+        tone))
+
+
+def render_counts(title, stats, notes=(), tone="info"):
+    """A headline, the numbers that matter, then the sentences under them.
+
+    ``stats`` is a sequence of (label, value, tone). Used by every screen that
+    reports an outcome, so the write, the read-back and the undo all read the
+    same way instead of each inventing its own shape.
+    """
+    body = [_title(title),
+            "".join(_stat(label, value, item_tone)
+                    for label, value, item_tone in stats)]
+    body.extend(_note(note) for note in notes if note)
+    return _shell(_panel("".join(body), tone))
+
+
+def render_result(title, lines, tone="info"):
+    """A titled block of sentences - the undo and the halt paths."""
+    body = [_title(title)]
+    body.extend(
+        '<div style="font-size:14px;margin-top:6px">{}</div>'.format(
+            html.escape(line)) for line in lines if line)
+    return _shell(_panel("".join(body), tone))
+
+
 @dataclass(frozen=True)
 class Group:
     key: str
@@ -149,30 +242,36 @@ def _regions_label(codes):
     return ", ".join(codes)
 
 
-def _section_html(title, groups, colour):
+def _section_html(title, groups, tone):
     if not groups:
         return ""
+    ink, fill = _tone(tone)
     rows = []
     for group in groups:
         badge = _regions_label(group.codes)
         rows.append(
-            '<div style="border-top:1px solid #e6e6e6;padding:10px 0">'
+            '<div style="border-top:1px solid {line};padding:11px 0">'
             '<div style="font-weight:600;font-size:14px">{product}'
-            '<span style="font-weight:400;font-size:12px;color:#666;'
+            '<span style="font-weight:400;font-size:12px;color:{muted};'
             'margin-left:8px">{badge}</span></div>'
-            '<div style="font-size:13px;color:#444;line-height:1.55">'
-            '{message} {detail}</div></div>'.format(
+            '<div style="font-size:13px;color:{muted};line-height:1.6;'
+            'margin-top:2px">{message} {detail}</div></div>'.format(
+                line=LINE, muted=MUTED,
                 product=html.escape(group.product),
                 badge=html.escape(badge),
                 message=html.escape(group.message),
                 detail=html.escape(group.detail)))
     return (
-        '<div style="border:1px solid #e0e0e0;border-left:3px solid {colour};'
-        'padding:14px 18px;margin:12px 0">'
-        '<div style="font-weight:600;font-size:15px">{title}</div>'
-        '<div style="font-size:12px;color:#777;margin-bottom:6px">{count} '
+        '<div style="background:{paper};border:1px solid {line};'
+        'border-left:4px solid {ink};border-radius:6px;padding:14px 18px;'
+        'margin:10px 0">'
+        '<div style="display:inline-block;background:{fill};color:{ink};'
+        'font-weight:600;font-size:14px;padding:3px 10px;border-radius:4px">'
+        '{title}</div>'
+        '<div style="font-size:12px;color:{muted};margin:6px 0 2px">{count} '
         'item{plural}</div>{rows}</div>'.format(
-            colour=colour, title=html.escape(title), count=len(groups),
+            paper=PAPER, line=LINE, ink=ink, fill=fill, muted=MUTED,
+            title=html.escape(title), count=len(groups),
             plural="" if len(groups) == 1 else "s", rows="".join(rows)))
 
 
@@ -187,6 +286,13 @@ def reconciliation(model):
     tail = "= {total:,} price rows in the file.".format(total=model.total_rows)
     head = "{write:,} written + {blocked:,} blocked".format(
         write=model.write_rows, blocked=model.blocked_rows)
+    if model.combined_rows < 0:
+        # Only reachable when a caller supplies no file total and the fallback
+        # pair count lands under written + blocked. Printing "+ -2 combined"
+        # would render an equation that balances on a negative number of rows;
+        # saying the total is unknown is the only honest thing left.
+        return ("{} rows. The file total could not be reconciled - open the "
+                "findings CSV for the full list.".format(head))
     if not model.combined_rows:
         return "{} {}".format(head, tail)
     return ("{} + {:,} combined with another row for the same SKU and "
@@ -239,43 +345,49 @@ def download_link_html(text, filename, label=None):
 
 
 def render_html(model):
-    """The operator's screen. Static content only - controls are widgets."""
-    parts = [
-        '<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;'
-        'max-width:820px">',
-        '<div style="border:1px solid #d8d8d8;padding:16px 20px">'
-        '<div style="font-size:18px;font-weight:600;margin-bottom:10px">'
-        '{}</div>'.format(html.escape(headline(model))),
-        '<div style="font-size:14px;line-height:1.9">'
+    """The operator's screen. Static content only - controls are widgets.
+
+    The three numbers lead, because they are the three the operator acts on:
+    what goes up, what needs a decision, what will not go at all. The
+    sentences under them stay, because a number without its reconciliation is
+    how a partial upload gets mistaken for a whole one.
+    """
+    blocked_tone = "bad" if model.blocked_rows else "none"
+    if not model.write_rows:
+        head_tone = "bad"
+    elif model.blocked_rows or model.warning_rows:
+        head_tone = "warn"
+    else:
+        head_tone = "ok"
+
+    stats = (("Will be written", model.write_rows, "ok"),
+             ("Need your check", model.warning_rows, "warn"),
+             ("Blocked", model.blocked_rows, blocked_tone))
+
+    body = [
+        _title(headline(model)),
+        "".join(_stat(label, value, tone) for label, value, tone in stats),
+        '<div style="font-size:14px;margin-top:6px">'
         '<strong>{total:,}</strong> price rows in your file, one for each SKU '
-        'and region you priced<br>'
-        '<strong>{write:,}</strong> prices will be written<br>'
-        '<strong>{blocked:,}</strong> rows blocked and excluded</div>'.format(
-            total=model.total_rows, write=model.write_rows,
-            blocked=model.blocked_rows),
-        '<div style="font-size:13px;color:#555;margin-top:8px">{}</div>'
-        .format(html.escape(reconciliation(model))),
-        '<div style="font-size:13px;color:#555;margin-top:8px">'
+        'and region you priced</div>'.format(total=model.total_rows),
+        _note(reconciliation(model)),
+        '<div style="font-size:13px;color:{muted};margin-top:8px">'
         '<strong>{attention:,}</strong> rows need your attention. This number '
         'overlaps both numbers above - blocked rows raise warnings too - so '
         'it is not a third group and does not add to the total.</div>'.format(
-            attention=model.warning_rows),
+            muted=MUTED, attention=model.warning_rows),
     ]
     if model.removed_entries:
-        parts.append(
-            '<div style="font-size:13px;color:#555;margin-top:10px">'
-            'This will also remove {:,} existing prices that overlap the new '
-            'dates.</div>'.format(model.removed_entries))
-    parts.append("</div>")
-    parts.append(_section_html(SECTION_TITLES["blocking"], model.blocking,
-                               "#a32d2d"))
-    parts.append(_section_html(SECTION_TITLES["warning"], model.warnings,
-                               "#ba7517"))
-    parts.append(_section_html(SECTION_TITLES["ending"], model.ending,
-                               "#ba7517"))
-    parts.append(_section_html(SECTION_TITLES["info"], model.info, "#888"))
-    parts.append("</div>")
-    return "".join(parts)
+        body.append(_note(
+            "This will also remove {:,} existing prices that overlap the new "
+            "dates.".format(model.removed_entries)))
+
+    parts = [_panel("".join(body), head_tone),
+             _section_html(SECTION_TITLES["blocking"], model.blocking, "bad"),
+             _section_html(SECTION_TITLES["warning"], model.warnings, "warn"),
+             _section_html(SECTION_TITLES["ending"], model.ending, "warn"),
+             _section_html(SECTION_TITLES["info"], model.info, "none")]
+    return _shell("".join(parts))
 
 
 def findings_csv(findings, names):

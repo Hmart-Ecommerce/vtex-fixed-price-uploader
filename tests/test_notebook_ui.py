@@ -708,3 +708,54 @@ def test_the_settle_wait_is_announced_before_a_recheck():
             None, SimpleNamespace(), "t", say, verify_fn=verify_fn))
     _assert_announces_the_wait(lines)
     assert any("nothing is written" in line.lower() for line in lines)
+
+
+# --- the styled screen: same facts, told so an operator can act on them ---
+
+def all_matched():
+    return VerifyResult(matched=2, rows=({"verdict": "match",
+                                          "live_entries": 1},
+                                         {"verdict": "match",
+                                          "live_entries": 1}))
+
+
+def run_with_show(verify, apply_result=None):
+    """Drive apply_and_verify through the styled sink and return the markup."""
+    shown = []
+    ui.apply_and_verify(
+        None, SimpleNamespace(), "t", None, lambda _t, *a, **k: None,
+        apply_fn=lambda *a, **k: apply_result or ApplyResult(written=2),
+        verify_fn=lambda *a, **k: verify,
+        show=shown.append)
+    return " ".join(shown)
+
+
+def test_a_fully_matched_read_back_says_so_in_its_headline():
+    assert "Every row confirmed in VTEX" in run_with_show(all_matched())
+
+
+def test_a_read_back_with_open_questions_never_claims_confirmation():
+    markup = run_with_show(verification_result())
+    assert "Every row confirmed" not in markup
+    assert "need attention" in markup
+
+
+def test_the_styled_read_back_still_carries_the_full_accounting():
+    assert "attempted =" in run_with_show(all_matched())
+
+
+def test_the_styled_write_result_names_a_failure_in_its_headline():
+    markup = run_with_show(all_matched(),
+                           ApplyResult(written=2, failed=3))
+    assert "failures" in markup.lower()
+
+
+def test_an_undo_that_skipped_pairs_does_not_read_as_finished_and_fine():
+    shown = []
+    pairs = [("1", "acct_one"), ("2", "acct_one")]
+    ui.run_restore(
+        a_config(), {}, pairs, "tok", object(), lambda _t, *a, **k: None,
+        restore_fn=lambda *a, **k: SimpleNamespace(
+            restored=1, failed=0, skipped=1, halted=""),
+        show=shown.append)
+    assert "read this" in " ".join(shown).lower()

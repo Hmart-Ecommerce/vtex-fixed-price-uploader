@@ -1,7 +1,8 @@
 from vtex_fixed_price_uploader.compose import Composition
 from vtex_fixed_price_uploader.report import (
-    TYPED_CONFIRMATION_THRESHOLD, build_model, download_link_html,
-    findings_csv, render_html, scope_sentence)
+    TONE, TYPED_CONFIRMATION_THRESHOLD, build_model, download_link_html,
+    findings_csv, reconciliation, render_counts, render_html, render_notice,
+    render_result, scope_sentence)
 from vtex_fixed_price_uploader.rules import Finding
 
 
@@ -259,3 +260,73 @@ def test_render_html_omits_the_third_term_when_nothing_was_combined():
                         {("1", "acct_one"): comp(), ("9", "acct_one"): comp()},
                         {("1", "acct_one")}, {}, total_rows=2)
     assert "combined" not in render_html(model)
+
+
+RED = TONE["bad"][0]
+GREEN = TONE["ok"][0]
+
+
+def test_a_clean_file_shows_no_alarm_colour_anywhere():
+    """Zero blocked rows must not be painted like a problem.
+
+    A red "0 blocked" pulls the eye to the one number that needs nothing,
+    and an operator who learns to ignore red here ignores it when it counts.
+    """
+    assert RED not in render_html(batch(write=3))
+
+
+def test_a_blocked_file_is_painted_as_a_problem():
+    blocked = [finding(rule="B4", severity="blocking",
+                       message="This product does not exist in that region.")]
+    assert RED in render_html(batch(write=1, blocked_findings=blocked))
+
+
+def test_notice_escapes_operator_facing_text():
+    markup = render_notice('drop <script>alert("x")</script>', "warn")
+    assert "<script>" not in markup
+    assert "alert" in markup
+
+
+def test_counts_render_every_label_and_value():
+    markup = render_counts("Upload finished",
+                           (("Written", 18, "ok"), ("Failed", 0, "bad")),
+                           notes=("18 written + 0 blocked.",))
+    assert "Written" in markup and "18" in markup
+    assert "Failed" in markup
+    assert "18 written + 0 blocked." in markup
+
+
+def test_counts_paint_a_zero_failure_neutral_but_a_real_one_red():
+    clean = render_counts("t", (("Failed", 0, "bad"),))
+    broken = render_counts("t", (("Failed", 2, "bad"),))
+    assert RED not in clean
+    assert RED in broken
+
+
+def test_a_thousand_separator_survives_into_the_card():
+    assert "2,984" in render_counts("t", (("Written", 2984, "ok"),))
+
+
+def test_result_keeps_every_sentence_it_is_given():
+    markup = render_result("Undo finished", ["First line.", "Second line."])
+    assert "First line." in markup and "Second line." in markup
+
+
+def test_result_drops_empty_sentences_instead_of_rendering_blanks():
+    markup = render_result("Undo finished", ["Only this.", "", None])
+    assert markup.count("<div style=\"font-size:14px") == 1
+
+
+def test_the_equation_never_balances_on_a_negative_row_count():
+    """A fallback total under written + blocked must not print "+ -2".
+
+    An operator reads this line to confirm nothing fell out of the file. An
+    equation with a negative term in it balances only on paper.
+    """
+    blocked = [finding(rule="B4", severity="blocking", sku="777",
+                       code="R9", account="acct_nine")]
+    model = batch(write=3, blocked_findings=blocked)
+    assert model.combined_rows < 0, "fixture no longer exercises the fallback"
+    line = reconciliation(model)
+    assert "-1" not in line and "+ -" not in line
+    assert "could not be reconciled" in line

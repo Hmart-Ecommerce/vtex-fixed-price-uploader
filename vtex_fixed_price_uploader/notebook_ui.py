@@ -52,12 +52,15 @@ class AckState:
         return ""
 
 
-def verification_summary(check):
-    """Return an operator-facing, exhaustive read-back accounting.
+def verification_counts(check):
+    """Assign every read-back row to exactly one bucket.
 
     ``still_multiple`` is an additional counter in ``VerifyResult`` and can
     overlap its matched or mismatched totals. For the visible accounting, each
     row is assigned exactly once, with several live prices taking precedence.
+
+    The sentence and the on-screen counters both read from here, so the number
+    in the card can never disagree with the number in the sentence beside it.
     """
     counts = {
         "matched": 0,
@@ -81,6 +84,12 @@ def verification_summary(check):
         else:
             counts["unreadable"] += 1
 
+    return counts
+
+
+def verification_summary(check):
+    """Return an operator-facing, exhaustive read-back accounting."""
+    counts = verification_counts(check)
     attempted = len(check.rows)
     accounting = (
         "{attempted:,} attempted = {matched:,} matched + "
@@ -225,8 +234,71 @@ SETTLE_NOTICE = (
     "please do not close this page or run this again while it waits.")
 
 
+def _emit(text, tone, say, show):
+    """One sentence: plain when there is no screen, styled when there is.
+
+    ``show`` is optional on purpose. Callers that only collect sentences -
+    the tests, and any future non-notebook front end - keep getting plain
+    text, and the styling stays a property of the screen rather than of the
+    pipeline.
+    """
+    if show is None:
+        say(text)
+        return
+    from vtex_fixed_price_uploader.report import render_notice
+    show(render_notice(text, tone))
+
+
+def _emit_write(result, say, show):
+    """The write outcome: three counters, then every sentence they need."""
+    lines = outcome_lines(result)
+    if show is None:
+        for line in lines:
+            say(line)
+        return
+    from vtex_fixed_price_uploader.report import render_counts
+    if result.halted:
+        title, tone = "Upload stopped early", "bad"
+    elif result.failed:
+        title, tone = "Upload finished with failures", "bad"
+    else:
+        title, tone = "Upload finished", "ok"
+    stats = (("Written", result.written, "ok"),
+             ("Failed", result.failed, "bad"),
+             ("Skipped", result.skipped, "info"))
+    show(render_counts(title, stats, notes=lines, tone=tone))
+
+
+def _emit_verification(check, say, show):
+    """The read-back: the screen an operator uses to decide it really landed.
+
+    Anything short of every attempted row matching is rendered as a problem,
+    including a run with nothing to check. "0 attempted" in green would read
+    as success to someone skimming.
+    """
+    text = verification_summary(check)
+    if show is None:
+        say(text)
+        return
+    from vtex_fixed_price_uploader.report import render_counts
+    counts = verification_counts(check)
+    attempted = len(check.rows)
+    clean = attempted > 0 and counts["matched"] == attempted
+    stats = (("Attempted", attempted, "info"),
+             ("Matched", counts["matched"], "ok"),
+             ("Mismatched", counts["mismatched"], "bad"),
+             ("Still multiple", counts["still_multiple"], "warn"),
+             ("Confirmed empty", counts["confirmed_empty"], "bad"),
+             ("Unreadable", counts["unreadable"], "warn"))
+    title = ("Every row confirmed in VTEX" if clean
+             else "Read-back finished - some rows need attention")
+    show(render_counts(title, stats, notes=(text,),
+                       tone="ok" if clean else "bad"))
+
+
 def apply_and_verify(config, pre, token, log, say, progress=None,
-                     abandon_unfinished=False, apply_fn=None, verify_fn=None):
+                     abandon_unfinished=False, apply_fn=None, verify_fn=None,
+                     show=None):
     """Write, then read back - on the halt path as well as the clean one.
 
     A halt usually arrives after hundreds of rows are already in VTEX. An
@@ -241,19 +313,18 @@ def apply_and_verify(config, pre, token, log, say, progress=None,
 
     result = apply_fn(config, pre, token, log, progress=progress,
                       abandon_unfinished=abandon_unfinished)
-    for line in outcome_lines(result):
-        say(line)
+    _emit_write(result, say, show)
     # Said BEFORE verify_fn, because verify_fn sleeps first and prints
     # nothing. Two silent minutes read as a frozen tab, and the operator's
     # instinct - reload, or press Upload again - is the worst thing they can
     # do here.
-    say(SETTLE_NOTICE)
+    _emit(SETTLE_NOTICE, "info", say, show)
     check = verify_fn(config, pre, token)
-    say(verification_summary(check))
+    _emit_verification(check, say, show)
     return result, check
 
 
-def verify_only(config, pre, token, say, verify_fn=None):
+def verify_only(config, pre, token, say, verify_fn=None, show=None):
     """Read the rows back again without writing anything.
 
     This is how an operator settles an unreadable row, or checks a halted run
@@ -261,9 +332,9 @@ def verify_only(config, pre, token, say, verify_fn=None):
     """
     if verify_fn is None:
         from vtex_fixed_price_uploader.verify import verify as verify_fn
-    say("{} Nothing is written.".format(SETTLE_NOTICE))
+    _emit("{} Nothing is written.".format(SETTLE_NOTICE), "info", say, show)
     check = verify_fn(config, pre, token)
-    say(verification_summary(check))
+    _emit_verification(check, say, show)
     return check
 
 
@@ -309,32 +380,52 @@ def restore_preview(pairs, snapshot):
 
 
 def run_restore(config, snapshot, pairs, token, log, say, progress=None,
-                restore_fn=None):
+                restore_fn=None, show=None):
     """Put the prior prices back and account for every pair."""
     if restore_fn is None:
         from vtex_fixed_price_uploader.restore import restore as restore_fn
 
     result = restore_fn(config, snapshot, pairs, token, log, progress=progress)
+    lines = []
     if result.halted:
-        say(_as_sentence(result.halted))
-    say("Put back the previous state for {}.".format(_pairs(result.restored)))
+        lines.append(_as_sentence(result.halted))
+    lines.append("Put back the previous state for {}.".format(
+        _pairs(result.restored)))
     if result.failed:
-        say("{} could not be put back and are still holding the new prices. "
-            "Run the undo again.".format(_pairs(result.failed)))
+        lines.append("{} could not be put back and are still holding the new "
+                     "prices. Run the undo again.".format(
+                         _pairs(result.failed)))
     # Every sentence below says what the pair means for production, not only
     # how it was counted. "restored 0, skipped 18" read as "the undo did
     # nothing"; the 18 new prices were in fact all still live.
     if result.skipped:
-        say("{} skipped - nothing was put back there, and the prices the "
-            "upload wrote are still live in VTEX. The saved copy could not "
-            "say what was there before, so changing anything would have been "
-            "a guess. Put those right by hand or from a good snapshot."
-            .format(_pairs(result.skipped)))
+        lines.append("{} skipped - nothing was put back there, and the prices "
+                     "the upload wrote are still live in VTEX. The saved copy "
+                     "could not say what was there before, so changing "
+                     "anything would have been a guess. Put those right by "
+                     "hand or from a good snapshot.".format(
+                         _pairs(result.skipped)))
     unreached = (len(pairs) - result.restored - result.failed
                  - result.skipped)
     if unreached > 0:
-        say("{} not reached because the undo stopped early - still holding "
-            "the prices the upload wrote.".format(_pairs(unreached)))
+        lines.append("{} not reached because the undo stopped early - still "
+                     "holding the prices the upload wrote.".format(
+                         _pairs(unreached)))
+
+    if show is None:
+        for line in lines:
+            say(line)
+        return result
+
+    from vtex_fixed_price_uploader.report import render_counts
+    clean = not (result.halted or result.failed or result.skipped or unreached)
+    stats = (("Put back", result.restored, "ok"),
+             ("Failed", result.failed, "bad"),
+             ("Skipped", result.skipped, "warn"),
+             ("Not reached", max(unreached, 0), "warn"))
+    show(render_counts(
+        "Undo finished" if clean else "Undo finished - read this",
+        stats, notes=lines, tone="ok" if clean else "bad"))
     return result
 
 
@@ -394,13 +485,17 @@ def run_interactive(config, ui, folder=None):
     log = WriteLog(log_path)
     out = ui["output"]
 
-    def say(text):
-        out.append_display_data(HTML(
-            '<div style="font-family:sans-serif;font-size:14px">{}</div>'.format(
-                text)))
+    def show(markup):
+        """Every block the operator reads goes through here, already styled."""
+        out.append_display_data(HTML(markup))
+
+    def say(text, tone="info"):
+        from vtex_fixed_price_uploader.report import render_notice
+        show(render_notice(text, tone))
 
     def excuse(exc):
-        say(friendly_error(exc, ui["token"].value))
+        # An error is the one message that must not look like the others.
+        say(friendly_error(exc, ui["token"].value), "bad")
 
     def on_start(_button):
         out.clear_output()
@@ -417,10 +512,10 @@ def run_interactive(config, ui, folder=None):
         from vtex_fixed_price_uploader.runner import preflight
 
         if not ui["upload"].value:
-            say("Choose a CSV file first.")
+            say("Choose a CSV file first.", "warn")
             return
         if not ui["token"].value:
-            say("Paste your VTEX login first.")
+            say("Paste your VTEX login first.", "warn")
             return
 
         item = list(ui["upload"].value)[0]
@@ -450,7 +545,7 @@ def run_interactive(config, ui, folder=None):
                 "Download every finding, with rule ids and regions (CSV)")))
 
         if ui["check_only"].value:
-            say("Check only - nothing was uploaded.")
+            say("Check only - nothing was uploaded.", "info")
             return
 
         state = AckState(pre.model)
@@ -492,18 +587,19 @@ def run_interactive(config, ui, folder=None):
                 try:
                     abandon = bool(ui["abandon"].value)
                     if abandon:
-                        say("You chose to abandon the unfinished upload log. "
-                            "Rows already written stay written in VTEX.")
-                    apply_and_verify(config, pre, ui["token"].value, log, say,
-                                     progress=progress,
-                                     abandon_unfinished=abandon)
+                        say("You chose to abandon the unfinished upload "
+                            "log. Rows already written stay written in "
+                            "VTEX.", "warn")
+                    apply_and_verify(config, pre, ui["token"].value, log,
+                                     say, progress=progress,
+                                     abandon_unfinished=abandon, show=show)
                 except Exception as exc:              # noqa: BLE001
                     excuse(exc)
 
         def on_recheck(_button):
             with out:
                 try:
-                    verify_only(config, pre, ui["token"].value, say)
+                    verify_only(config, pre, ui["token"].value, say, show=show)
                 except Exception as exc:              # noqa: BLE001
                     excuse(exc)
 
@@ -529,16 +625,16 @@ def run_interactive(config, ui, folder=None):
         from vtex_fixed_price_uploader.restore import pairs_from_log
 
         if not ui["token"].value:
-            say("Paste your VTEX login first, then press Put the previous prices back "
-                "again.")
+            say("Paste your VTEX login first, then press Put the previous "
+                "prices back again.", "warn")
             return
         pairs = pairs_from_log(log_path)
         if not pairs:
             say("There is nothing to undo - this log records no successful "
-                "writes.")
+                "writes.", "info")
             return
         snapshot = load_snapshot(snapshot_path)
-        say(restore_preview(pairs, snapshot))
+        say(restore_preview(pairs, snapshot), "warn")
 
         confirm = widgets.Button(description="Yes, put those prices back",
                                  button_style="danger")
@@ -548,7 +644,7 @@ def run_interactive(config, ui, folder=None):
             with out:
                 try:
                     run_restore(config, snapshot, pairs, ui["token"].value,
-                                log, say)
+                                log, say, show=show)
                 except Exception as exc:              # noqa: BLE001
                     excuse(exc)
 
