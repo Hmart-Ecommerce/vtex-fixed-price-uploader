@@ -53,6 +53,7 @@ class ReportModel:
     ack_keys: tuple = ()
     needs_typed_confirmation: bool = False
     total_rows: int = 0
+    combined_rows: int = 0
     account_count: int = 0
 
 
@@ -85,8 +86,16 @@ def _group(findings, names):
     return tuple(groups)
 
 
-def build_model(findings, compositions, write_pairs, names):
-    """Everything the screen and the confirmation need, and nothing else."""
+def build_model(findings, compositions, write_pairs, names, total_rows=None):
+    """Everything the screen and the confirmation need, and nothing else.
+
+    `total_rows` is the number of rows the FILE carried, which the caller has
+    and this function does not. It is not derivable here: `compositions` is
+    keyed by (sku, account), so its length is a count of pairs, and a file may
+    legally carry several rows for one pair - B1 only blocks duplicate rows
+    whose windows OVERLAP. Passing the pair count off as the file total is
+    what made the screen disagree with the operator's own spreadsheet.
+    """
     blocking = _group([f for f in findings if f.severity == "blocking"], names)
     warnings = _group([f for f in findings
                        if f.severity == "warning" and f.rule != "W6"], names)
@@ -107,9 +116,16 @@ def build_model(findings, compositions, write_pairs, names):
     # writes plus 432 removals through with no typed step.
     typed = (write_rows + removed) > TYPED_CONFIRMATION_THRESHOLD
 
-    # Every pair the file produced: the writable ones plus the blocked ones.
-    # This is the denominator the three headline numbers are read against.
-    total_rows = len(compositions)
+    # The denominator the headline numbers are read against. Without a real
+    # count from the caller, fall back to the pair count - which is exact
+    # whenever no two rows shared a pair, and is all a direct caller has.
+    if total_rows is None:
+        total_rows = len(compositions)
+    # write_rows + blocked_rows accounts for every PAIR. Anything left over is
+    # rows that shared a (sku, account) with another row and were merged into
+    # one payload. Naming it is the only way the equation can add up; dropping
+    # it would leave the operator to discover the gap themselves.
+    combined_rows = total_rows - write_rows - blocked_rows
     account_count = len({account for pair in write_pairs
                          if pair in compositions
                          for account in (pair[1],)})
@@ -119,7 +135,8 @@ def build_model(findings, compositions, write_pairs, names):
         warning_rows=warning_rows, removed_entries=removed,
         blocking=blocking, warnings=warnings, ending=ending, info=info,
         ack_keys=ack_keys, needs_typed_confirmation=typed,
-        total_rows=total_rows, account_count=account_count)
+        total_rows=total_rows, combined_rows=combined_rows,
+        account_count=account_count)
 
 
 def _regions_label(codes):
@@ -157,6 +174,23 @@ def _section_html(title, groups, colour):
         'item{plural}</div>{rows}</div>'.format(
             colour=colour, title=html.escape(title), count=len(groups),
             plural="" if len(groups) == 1 else "s", rows="".join(rows)))
+
+
+def reconciliation(model):
+    """The equation, with every term it actually needs to balance.
+
+    Written and blocked are counts of (sku, account) pairs; the file total is
+    a count of rows. They differ by exactly the rows that shared a pair with
+    another row, so that third term is stated whenever it is not zero rather
+    than left for the operator to find as an unexplained gap.
+    """
+    tail = "= {total:,} price rows in the file.".format(total=model.total_rows)
+    head = "{write:,} written + {blocked:,} blocked".format(
+        write=model.write_rows, blocked=model.blocked_rows)
+    if not model.combined_rows:
+        return "{} {}".format(head, tail)
+    return ("{} + {:,} combined with another row for the same SKU and "
+            "account {}".format(head, model.combined_rows, tail))
 
 
 def headline(model):
@@ -213,16 +247,14 @@ def render_html(model):
         '<div style="font-size:18px;font-weight:600;margin-bottom:10px">'
         '{}</div>'.format(html.escape(headline(model))),
         '<div style="font-size:14px;line-height:1.9">'
-        '<strong>{total:,}</strong> rows in your file<br>'
+        '<strong>{total:,}</strong> price rows in your file, one for each SKU '
+        'and region you priced<br>'
         '<strong>{write:,}</strong> prices will be written<br>'
         '<strong>{blocked:,}</strong> rows blocked and excluded</div>'.format(
             total=model.total_rows, write=model.write_rows,
             blocked=model.blocked_rows),
-        '<div style="font-size:13px;color:#555;margin-top:8px">'
-        '{write:,} written + {blocked:,} blocked = {total:,} rows in the '
-        'file.</div>'.format(write=model.write_rows,
-                             blocked=model.blocked_rows,
-                             total=model.total_rows),
+        '<div style="font-size:13px;color:#555;margin-top:8px">{}</div>'
+        .format(html.escape(reconciliation(model))),
         '<div style="font-size:13px;color:#555;margin-top:8px">'
         '<strong>{attention:,}</strong> rows need your attention. This number '
         'overlaps both numbers above - blocked rows raise warnings too - so '

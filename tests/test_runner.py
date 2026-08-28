@@ -374,3 +374,19 @@ def test_apply_rechecks_headroom_fresh_for_only_remaining_writes(
     assert len(apply_calls) == 1
     assert apply_calls[0][:3] == ("tok", 0, 1)
     assert apply_calls[0][3] > pre.now
+
+
+# --- Fix wave E: the operator-facing total must count the file's rows ------
+
+SECOND_WINDOW = ("111,8.99,7.49,2026-09-20T1:00:00-03:00,"
+                 "2026-09-30T1:00:00-03:00,8.99,7.49,"
+                 "2026-09-20T1:00:00-03:00,2026-09-30T1:00:00-03:00,weekly\n")
+
+
+def test_preflight_model_total_counts_rows_not_pairs():
+    """Two non-overlapping lines for one sku+account are legal and are two
+    rows in the file, even though they compose into a single pair."""
+    pre = run_preflight(GOOD + SECOND_WINDOW)
+    assert len(pre.rows) == 4
+    assert len(pre.compositions) == 2
+    assert pre.model.total_rows == 4

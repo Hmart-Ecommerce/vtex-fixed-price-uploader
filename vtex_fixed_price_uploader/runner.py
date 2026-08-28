@@ -107,7 +107,10 @@ def preflight(config, source, token, now=None, progress=None, fetch=None,
         key for key in compositions if key not in blocked)
 
     names = fetch_names(config, skus, fetch=name_fetch)
-    model = build_model(findings, compositions, write_pairs, names)
+    # The file's real row count. `compositions` is keyed by pair, so its
+    # length silently merges the several rows a pair may legally carry.
+    model = build_model(findings, compositions, write_pairs, names,
+                        total_rows=len(rows))
 
     csv_hash = sha256_of([
         [str(row.sku), row.account, row.promo, row.list_price,

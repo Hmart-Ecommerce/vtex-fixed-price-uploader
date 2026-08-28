@@ -218,6 +218,13 @@ def outcome_lines(result):
     return tuple(lines)
 
 
+SETTLE_NOTICE = (
+    "Now waiting about two minutes before reading the rows back. VTEX's "
+    "pricing takes roughly that long to settle, and reading sooner reports "
+    "failures that are not real. Nothing is wrong and nothing is stuck - "
+    "please do not close this page or run this again while it waits.")
+
+
 def apply_and_verify(config, pre, token, log, say, progress=None,
                      abandon_unfinished=False, apply_fn=None, verify_fn=None):
     """Write, then read back - on the halt path as well as the clean one.
@@ -236,8 +243,11 @@ def apply_and_verify(config, pre, token, log, say, progress=None,
                       abandon_unfinished=abandon_unfinished)
     for line in outcome_lines(result):
         say(line)
-    say("Reading every attempted row back from VTEX - this takes about two "
-        "minutes.")
+    # Said BEFORE verify_fn, because verify_fn sleeps first and prints
+    # nothing. Two silent minutes read as a frozen tab, and the operator's
+    # instinct - reload, or press Upload again - is the worst thing they can
+    # do here.
+    say(SETTLE_NOTICE)
     check = verify_fn(config, pre, token)
     say(verification_summary(check))
     return result, check
@@ -251,8 +261,7 @@ def verify_only(config, pre, token, say, verify_fn=None):
     """
     if verify_fn is None:
         from vtex_fixed_price_uploader.verify import verify as verify_fn
-    say("Reading every attempted row back from VTEX - this takes about two "
-        "minutes. Nothing is written.")
+    say("{} Nothing is written.".format(SETTLE_NOTICE))
     check = verify_fn(config, pre, token)
     say(verification_summary(check))
     return check

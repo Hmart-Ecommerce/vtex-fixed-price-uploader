@@ -179,8 +179,9 @@ def test_render_html_states_the_file_total():
 def test_render_html_reconciles_written_plus_blocked_to_the_total():
     model = build_model([finding(rule="B1", severity="blocking", sku="9")],
                         {("1", "acct_one"): comp(), ("9", "acct_one"): comp()},
-                        {("1", "acct_one")}, {})
-    assert "1 written + 1 blocked = 2 rows in the file." in render_html(model)
+                        {("1", "acct_one")}, {}, total_rows=2)
+    assert ("1 written + 1 blocked = 2 price rows in the file."
+            in render_html(model))
 
 
 def test_render_html_says_the_attention_count_overlaps_the_others():
@@ -233,3 +234,28 @@ def test_download_link_carries_the_csv_and_a_filename():
     assert "Download the detail" in link
     payload = link.split("base64,")[1].split('"')[0]
     assert base64.b64decode(payload).decode("utf-8") == csv_text
+
+
+# --- Fix wave E: the file total is the file's rows, not its pairs ----------
+
+
+def test_total_rows_is_the_file_row_count_not_the_pair_count():
+    """Two legal lines for one sku+account are two rows but one pair."""
+    comps = {("111", "acct_one"): comp()}
+    model = build_model([], comps, {("111", "acct_one")}, {}, total_rows=3)
+    assert model.total_rows == 3
+
+
+def test_render_html_names_the_third_term_when_rows_were_combined():
+    comps = {("111", "acct_one"): comp()}
+    model = build_model([], comps, {("111", "acct_one")}, {}, total_rows=3)
+    html = render_html(model)
+    assert "1 written + 0 blocked + 2 combined" in html
+    assert "= 3 price rows in the file." in html
+
+
+def test_render_html_omits_the_third_term_when_nothing_was_combined():
+    model = build_model([finding(rule="B1", severity="blocking", sku="9")],
+                        {("1", "acct_one"): comp(), ("9", "acct_one"): comp()},
+                        {("1", "acct_one")}, {}, total_rows=2)
+    assert "combined" not in render_html(model)

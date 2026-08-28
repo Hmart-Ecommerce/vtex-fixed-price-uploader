@@ -595,3 +595,58 @@ def test_build_ui_uses_the_paths_it_is_given(monkeypatch, tmp_path):
     assert screen.ui["log_path"] == screen.log_path
     assert screen.ui["snapshot_path"] == screen.snapshot_path
     assert screen.calls["logs"] == [screen.log_path]
+
+
+# --- Fix wave E: the two-minute settle wait must be announced before it -----
+
+
+def _lines_before_the_read_back(call):
+    """Run `call(say)` and return only what was said BEFORE verify ran."""
+    said, order = [], []
+
+    def say(line):
+        order.append("say")
+        said.append(line)
+
+    def verify_fn(*args, **kwargs):
+        order.append("verify")
+        return verification_result()
+
+    call(say, verify_fn)
+    assert "verify" in order, "verify never ran"
+    return said[:order.index("verify")]
+
+
+def _assert_announces_the_wait(lines):
+    notice = " ".join(lines).lower()
+    assert "two minutes" in notice, notice
+    assert ("waiting" in notice or "pausing" in notice), notice
+    assert "do not close" in notice, notice
+
+
+def test_the_settle_wait_is_announced_before_it_starts_on_the_halt_path():
+    lines = _lines_before_the_read_back(
+        lambda say, verify_fn: ui.apply_and_verify(
+            None, SimpleNamespace(), "t", None, say,
+            apply_fn=lambda *a, **k: ApplyResult(
+                written=349, failed=20,
+                halted="Your login was rejected part-way through."),
+            verify_fn=verify_fn))
+    _assert_announces_the_wait(lines)
+
+
+def test_the_settle_wait_is_announced_before_it_starts_on_the_clean_path():
+    lines = _lines_before_the_read_back(
+        lambda say, verify_fn: ui.apply_and_verify(
+            None, SimpleNamespace(), "t", None, say,
+            apply_fn=lambda *a, **k: ApplyResult(written=5),
+            verify_fn=verify_fn))
+    _assert_announces_the_wait(lines)
+
+
+def test_the_settle_wait_is_announced_before_a_recheck():
+    lines = _lines_before_the_read_back(
+        lambda say, verify_fn: ui.verify_only(
+            None, SimpleNamespace(), "t", say, verify_fn=verify_fn))
+    _assert_announces_the_wait(lines)
+    assert any("nothing is written" in line.lower() for line in lines)
