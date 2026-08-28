@@ -108,3 +108,12 @@ def test_accounts_must_map_string_keys_to_non_empty_string_values(accounts):
 def test_config_field_annotations_are_precise():
     assert Config.__annotations__["accounts"] == dict[str, str]
     assert Config.__annotations__["never_write"] == tuple[str, ...]
+
+
+def test_catalog_host_is_optional():
+    assert load_config(RAW).catalog_host is None
+
+
+def test_catalog_host_is_read_when_present():
+    raw = dict(RAW, catalog_host="https://shop.example.com")
+    assert load_config(raw).catalog_host == "https://shop.example.com"

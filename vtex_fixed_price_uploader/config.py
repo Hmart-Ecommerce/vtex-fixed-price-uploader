@@ -18,6 +18,7 @@ class Config:
     accounts: dict[str, str]
     never_write: tuple[str, ...]
     trade_policy: str
+    catalog_host: str = None
 
 
 def load_config(source):
@@ -64,6 +65,7 @@ def load_config(source):
         accounts=dict(accounts),
         never_write=tuple(never_write),
         trade_policy=trade_policy,
+        catalog_host=raw.get("catalog_host") or None,
     )
 
 
