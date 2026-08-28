@@ -35,8 +35,12 @@ them to the package, notebook, or repository.
 
 ## Run the notebook
 
-1. Put `accounts.json` and the price CSV in the Drive folder configured by
-   `FOLDER` in `notebook/price_upload.ipynb`.
+1. Put `accounts.json` in a Drive folder, and set `FOLDER_NAME` in
+   `notebook/price_upload.ipynb` to that folder's name. The notebook resolves
+   the name against every root Colab mounts - a personal Drive and a shared
+   Drive, each with a legacy spelling - so one name works for every operator
+   regardless of which root the folder arrives under. The price CSV is chosen
+   from the operator's own computer and does not go in the folder.
 2. Open the notebook in Google Colab and press `Run all`.
 3. Choose the CSV, paste the login value, and select **Check this file**.
 4. Review every group. Use check-only mode to stop before writes, or acknowledge
