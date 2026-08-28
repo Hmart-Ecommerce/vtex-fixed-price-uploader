@@ -8,6 +8,7 @@ from vtex_fixed_price_uploader.auth import check_headroom
 from vtex_fixed_price_uploader.compose import compose
 from vtex_fixed_price_uploader.names import fetch_names
 from vtex_fixed_price_uploader.parser import parse_csv
+from vtex_fixed_price_uploader.pricing import fetch_prices
 from vtex_fixed_price_uploader.reader import read_all, snapshot_hash
 from vtex_fixed_price_uploader.report import build_model
 from vtex_fixed_price_uploader.rules import blocked_pairs, evaluate
@@ -36,19 +37,41 @@ class ApplyResult:
     halted: str = ""
 
 
+PROBE_SKU = "1"
+
+
+class CredentialRejected(Exception):
+    """The credential was refused by VTEX."""
+
+
+def check_credential(config, token, fetch=None):
+    """Raise CredentialRejected when a single probe read returns 401.
+
+    Any other status, including 404, proves the credential works. The probe
+    SKU may simply not exist in that account. The error never contains the
+    token.
+    """
+    fetch = fetch or fetch_prices
+    account = sorted(config.accounts.values())[0]
+    status, _data = fetch(account, PROBE_SKU, token)
+    if status == 401:
+        raise CredentialRejected(
+            "Your login was not accepted. Get a fresh login and try again.")
+
+
 def preflight(config, source, token, now=None, progress=None, fetch=None,
-              name_fetch=None):
+              name_fetch=None, skip_credential_check=False):
     """Run phases 0-3: read, validate, and build the report without writing."""
     now = now or datetime.now(timezone.utc)
     rows = parse_csv(source, config)
 
+    if not skip_credential_check:
+        pairs = len(set(r.sku for r in rows)) * len(
+            set(config.accounts.values()))
+        check_headroom(token, pairs, len(rows), now)
+        check_credential(config, token, fetch=fetch)
+
     skus = {str(row.sku) for row in rows}
-    accounts = set(config.accounts.values())
-    potential_writes = {(str(row.sku), row.account) for row in rows}
-    # When expiry is opaque, the full preflight read below is the credential
-    # probe: a rejected credential raises from read_all and is never converted
-    # into a per-row finding.
-    check_headroom(token, len(skus) * len(accounts), len(potential_writes), now)
 
     reads = read_all(config, skus, token, progress=progress, fetch=fetch)
 
@@ -89,9 +112,17 @@ def preflight(config, source, token, now=None, progress=None, fetch=None,
         snapshot_hash=snapshot_hash(reads), now=now)
 
 
-def apply(config, pre, token, log, progress=None, post=None):
-    """Write every eligible pair, halting the whole run on 401 or 403."""
+def apply(config, pre, token, log, progress=None, post=None, fetch=None):
+    """Write every eligible pair, halting the whole run on 401 or 403.
+
+    The credential is re-probed before the log opens so a login that expired
+    during preflight cannot allow any write to begin.
+    """
     post = post or writer_module.post_fixed
+    try:
+        check_credential(config, token, fetch=fetch)
+    except CredentialRejected as exc:
+        return ApplyResult(halted=str(exc))
 
     if log.unfinished() is None:
         log.begin(len(pre.write_pairs), pre.csv_hash, pre.snapshot_hash)
