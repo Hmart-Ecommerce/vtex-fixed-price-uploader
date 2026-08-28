@@ -29,6 +29,9 @@ class Row:
     promo_type: str
     line: int
 
+    def __post_init__(self):
+        object.__setattr__(self, "sku", str(self.sku))
+
 
 def parse_sheet_datetime(value: str | None) -> datetime | None:
     """One sheet timestamp as a UTC instant, or None when blank.

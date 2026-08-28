@@ -232,3 +232,20 @@ def test_row_is_hashable_and_frozen():
     assert len({rows[0], rows[0]}) == 1
     with pytest.raises(FrozenInstanceError):
         rows[0].promo = 1.0
+
+
+def test_row_coerces_an_integer_sku_to_text_at_construction():
+    row = Row(
+        sku=7325,
+        code="R1",
+        account="acct_one",
+        promo=7.99,
+        list_price=8.99,
+        start=None,
+        end=None,
+        promo_type="weekly",
+        line=2,
+    )
+
+    assert row.sku == "7325"
+    assert isinstance(row.sku, str)

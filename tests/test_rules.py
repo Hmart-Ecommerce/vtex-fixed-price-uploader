@@ -85,6 +85,7 @@ def test_every_rule_severity_is_pinned_by_id():
         "B4": "blocking",
         "B5": "blocking",
         "B6": "blocking",
+        "B7": "blocking",
         "W1": "warning",
         "W2": "warning",
         "W3": "warning",
@@ -227,6 +228,27 @@ def test_a_successful_read_is_not_treated_as_a_failed_read():
     findings = run([row()])
     assert blocked_pairs(findings) == set()
     assert "B6" not in rules_fired(findings)
+
+
+def test_b7_blocks_skus_the_writer_cannot_accept():
+    for sku in ("1234.0", "two words", "path/part", "sku#1"):
+        findings = run([row(sku=sku)])
+        b7 = [finding for finding in findings if finding.rule == "B7"]
+
+        assert len(b7) == 1, sku
+        assert b7[0].severity == "blocking"
+        assert b7[0].sku == sku
+        assert blocked_pairs(findings) == {(sku, "acct_one")}
+
+
+def test_b7_explains_how_to_fix_a_spreadsheet_formatted_sku():
+    finding = [f for f in run([row(sku="1234.0")]) if f.rule == "B7"][0]
+
+    guidance = finding.message + " " + finding.detail
+    assert "1234.0" in guidance
+    assert "plain identifier" in guidance
+    assert "format" in guidance.lower()
+    assert "text" in guidance.lower()
 
 
 def test_b5_zero_price():
@@ -433,6 +455,20 @@ def test_i1_does_not_fire_when_the_sku_is_absent_from_that_account():
              ("111", "acct_two"): (404, None)}
     findings = run([r], reads)
     assert not any(f.rule == "I1" for f in findings)
+
+
+def test_i1_preserves_each_region_code_when_accounts_are_shared():
+    config = load_config({
+        "accounts": {"R1": "acct_one", "R2": "acct_one"},
+        "never_write": ["acct_master"],
+        "trade_policy": "1",
+    })
+    rows = [row(code="R1", account="acct_one")]
+    reads = {("111", "acct_one"): (200, payload())}
+
+    findings = evaluate(rows, reads, {}, config, NOW)
+
+    assert [(finding.rule, finding.code) for finding in findings] == [("I1", "R2")]
 
 
 # --- Fix 3: suppression is gated on a missing base, not on blocked-ness. ---

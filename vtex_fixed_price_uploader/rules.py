@@ -1,6 +1,6 @@
-"""The thirteen checks that run before anything is written.
+"""The fourteen checks that run before anything is written.
 
-Six blocking rules remove a row from the batch; the operator cannot consent
+Seven blocking rules remove a row from the batch; the operator cannot consent
 past them. Six warning rules are shown and acknowledged per group. One
 informational rule is reported and needs no action.
 
@@ -21,6 +21,7 @@ from vtex_fixed_price_uploader.parser import Row
 from vtex_fixed_price_uploader.pricing import (
     base_price, entry_window, serving_today)
 from vtex_fixed_price_uploader.reader import is_failed_read
+from vtex_fixed_price_uploader.writer import _SKU_PATTERN
 
 MAX_PRICE = 999.0
 DEEP_DISCOUNT_FLOOR = 0.40   # promo below 40% of base is >60% off
@@ -37,6 +38,7 @@ DEEP_DISCOUNT_FLOOR = 0.40   # promo below 40% of base is >60% off
 SEVERITY = {
     "B1": "blocking", "B2": "blocking", "B3": "blocking",
     "B4": "blocking", "B5": "blocking", "B6": "blocking",
+    "B7": "blocking",
     "W1": "warning", "W2": "warning", "W3": "warning",
     "W4": "warning", "W5": "warning", "W6": "warning",
     "I1": "info",
@@ -87,6 +89,14 @@ def _blocking_for_row(row: Row, status: int) -> list[Finding]:
     """
     key = (row.sku, row.code, row.account)
     out = []
+
+    if not isinstance(row.sku, str) or not _SKU_PATTERN.match(row.sku):
+        out.append(_finding(
+            "B7", key,
+            "SKU {!r} is not a plain identifier.".format(row.sku),
+            "The sku column must contain only a plain identifier. A value "
+            "such as 1234.0 is a spreadsheet formatting artifact; format "
+            "the sku column as text and correct the value before uploading."))
 
     if is_failed_read(status):
         # Nothing was learned about this pair, so nothing about it can be
@@ -301,14 +311,19 @@ def evaluate(rows: Sequence[Row],
             done.add(key)
             findings.extend(_w6(by_pair[key], compositions.get(key), now))
 
-    covered = {(r.sku, r.account) for r in rows}
-    code_by_account = {v: k for k, v in config.accounts.items()}
+    covered = {(r.sku, r.code) for r in rows}
+    codes_by_account: dict[str, list[str]] = {}
+    for code, account in config.accounts.items():
+        codes_by_account.setdefault(account, []).append(code)
     for (sku, account), (status, _data) in sorted(reads.items()):
-        if status == 200 and (sku, account) not in covered:
-            findings.append(_finding(
-                "I1", (sku, code_by_account.get(account, ""), account),
-                "No price given for this region.",
-                "The product exists here but your file left it blank."))
+        if status != 200:
+            continue
+        for code in codes_by_account.get(account, [""]):
+            if (sku, code) not in covered:
+                findings.append(_finding(
+                    "I1", (sku, code, account),
+                    "No price given for this region.",
+                    "The product exists here but your file left it blank."))
 
     return findings
 
