@@ -1,8 +1,8 @@
 from vtex_fixed_price_uploader.compose import Composition
 from vtex_fixed_price_uploader.report import (
     TONE, TYPED_CONFIRMATION_THRESHOLD, build_model, download_link_html,
-    ack_label_html, findings_csv, reconciliation, render_counts,
-    render_html, render_notice, render_result, scope_sentence)
+    findings_csv, reconciliation, render_counts, render_html,
+    render_notice, render_result, scope_sentence)
 from vtex_fixed_price_uploader.rules import Finding
 
 
@@ -331,34 +331,3 @@ def test_the_equation_never_balances_on_a_negative_row_count():
     assert "-1" not in line and "+ -" not in line
     assert "could not be reconciled" in line
 
-
-def test_the_acknowledgement_label_carries_the_whole_sentence():
-    """A truncated label asks the operator to agree to something unread.
-
-    The old label cut the message at 70 characters and the widget cut it
-    again by width. Both ends of the sentence have to survive.
-    """
-    long_message = ("Uploading this leaves 2026-08-29 to 2026-09-02 with no "
-                    "promotion - the product goes back to its normal price "
-                    "of $9.99 on those days.")
-    model = build_model(
-        [finding(rule="W7", message=long_message,
-                 detail="Move your start date to 2026-08-29.")], {}, set(), {})
-    label = ack_label_html(model.warnings[0])
-    assert "on those days." in label
-    assert "Move your start date to 2026-08-29." in label
-    assert "..." not in label and "\u2026" not in label
-
-
-def test_the_acknowledgement_label_names_every_region_it_stands_for():
-    findings = [finding(rule="W7", code="R1", account="a1"),
-                finding(rule="W7", code="R2", account="a2")]
-    model = build_model(findings, {}, set(), {})
-    assert "R1, R2" in ack_label_html(model.warnings[0])
-
-
-def test_the_acknowledgement_label_escapes_a_hostile_product_name():
-    model = build_model([finding(sku="111")], {}, set(),
-                        {"111": "<script>alert(1)</script>"})
-    label = ack_label_html(model.warnings[0])
-    assert "<script>" not in label

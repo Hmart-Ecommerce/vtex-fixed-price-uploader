@@ -14,23 +14,27 @@ def model(ack_keys=("W1-111",), typed=False, write_rows=10):
                        needs_typed_confirmation=typed)
 
 
-def test_not_ready_before_anything_is_ticked():
+def test_not_ready_before_the_warnings_are_acknowledged():
     state = AckState(model())
     assert state.ready is False
 
 
-def test_ready_once_every_group_is_ticked():
+def test_one_acknowledgement_covers_every_warning_group():
+    """Reviewing the warnings is one decision, so it takes one confirmation.
+
+    The items themselves stay in the report, in full. A tick per group was a
+    tick per group unread, and it pushed the upload button off the screen.
+    """
     state = AckState(model(ack_keys=("W1-111", "W6-222")))
-    state.tick("W1-111")
     assert state.ready is False
-    state.tick("W6-222")
+    state.acknowledge()
     assert state.ready is True
 
 
-def test_unticking_removes_readiness():
+def test_withdrawing_the_acknowledgement_removes_readiness():
     state = AckState(model())
-    state.tick("W1-111")
-    state.tick("W1-111", checked=False)
+    state.acknowledge()
+    state.acknowledge(False)
     assert state.ready is False
 
 
@@ -63,16 +67,14 @@ def test_typed_confirmation_tolerates_separators_and_spaces():
     assert state.ready is True
 
 
-def test_blocking_reason_names_what_is_missing():
+def test_blocking_reason_counts_the_items_waiting_to_be_read():
     state = AckState(model(ack_keys=("W1-111", "W6-222")))
-    state.tick("W1-111")
-    assert "1" in state.blocking_reason
+    assert "2" in state.blocking_reason
 
 
-def test_ticking_an_unknown_key_is_ignored():
+def test_blocking_reason_reads_as_one_item_when_there_is_one():
     state = AckState(model(ack_keys=("W1-111",)))
-    state.tick("nonsense")
-    assert state.ready is False
+    assert "1 item above" in state.blocking_reason
 
 
 def test_ipywidgets_import_is_lazy_and_package_imports_without_it(monkeypatch):
@@ -194,8 +196,13 @@ class FakeOutput(FakeWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.lines = []
+        self.clears = 0
 
     def clear_output(self, *args, **kwargs):
+        # Real ipywidgets also drops the widgets displayed into this output;
+        # the fake counts the call instead, which is the part the screen
+        # controls and the part a test can hold it to.
+        self.clears += 1
         self.lines.clear()
 
     def append_display_data(self, obj):
@@ -263,6 +270,10 @@ def install_fake_widgets(monkeypatch):
                  "Label", "Text", "HBox", "VBox", "HTML"):
         setattr(widgets_module, name, type(name, (FakeWidget,), {}))
     widgets_module.Output = FakeOutput
+    # Layout carries no behaviour the screen depends on - it only stops a
+    # widget label being cut to the widget's width - so a bag of attributes
+    # is a faithful enough stand-in.
+    widgets_module.Layout = type("Layout", (FakeWidget,), {})
 
     display_module = types.ModuleType("IPython.display")
 
@@ -759,3 +770,48 @@ def test_an_undo_that_skipped_pairs_does_not_read_as_finished_and_fine():
             restored=1, failed=0, skipped=1, halted=""),
         show=shown.append)
     assert "read this" in " ".join(shown).lower()
+
+
+# --- the undo asks one question, on a screen of its own -----------------
+
+def test_declining_the_undo_writes_nothing_and_says_where_that_leaves_you(
+        monkeypatch, tmp_path):
+    """A confirmation with no way out is a confirmation people click through.
+
+    Declining also has to state the consequence: the prices from the upload
+    are still live. "Nothing happened" is not the same fact.
+    """
+    screen = open_screen(monkeypatch, tmp_path)
+    screen.ui["token"].value = "a-login-value"
+    screen.button("Put the previous prices back").click()
+    screen.button("No, leave the prices").click()
+    assert screen.calls["restore"] == []
+    text = screen.text.lower()
+    assert "nothing was put back" in text
+    assert "still live" in text
+
+
+def test_the_undo_offer_clears_the_upload_screen_first(monkeypatch, tmp_path):
+    """One decision on screen at a time.
+
+    The undo used to be offered into the output the upload screen still held,
+    so "Upload N prices" and "Yes, put those prices back" sat there together
+    with nothing saying which step each belonged to.
+    """
+    screen = open_screen(monkeypatch, tmp_path)
+    start_a_run(screen)
+    before = screen.ui["output"].clears
+    screen.ui["token"].value = "a-login-value"
+    screen.button("Put the previous prices back").click()
+    assert screen.ui["output"].clears > before
+
+
+def test_answering_the_undo_stands_both_buttons_down(monkeypatch, tmp_path):
+    screen = open_screen(monkeypatch, tmp_path)
+    screen.ui["token"].value = "a-login-value"
+    screen.button("Put the previous prices back").click()
+    confirm = screen.button("Yes, put")
+    cancel = screen.button("No, leave the prices")
+    confirm.click()
+    assert confirm.disabled is True
+    assert cancel.disabled is True

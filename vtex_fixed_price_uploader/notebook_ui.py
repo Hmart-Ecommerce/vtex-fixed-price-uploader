@@ -7,21 +7,27 @@ inside the functions that use them.
 
 
 class AckState:
-    """Track acknowledgement of each warning group and typed confirmation."""
+    """Track the one acknowledgement of the warnings, and typed confirmation.
+
+    Every warning group used to need its own tick. Seven checkboxes for seven
+    facts already stated in full in the report above is seven chances to tick
+    without reading, and it buried the upload button under a column of them.
+    Reviewing the warnings is one decision, so it takes one confirmation. The
+    report still carries every item, in full, with its fix instruction.
+    """
 
     def __init__(self, model):
         self.model = model
-        self._required = set(model.ack_keys or ())
-        self._ticked = set()
+        self.warning_groups = len(model.ack_keys or ())
+        self._acknowledged = False
         self._typed = ""
 
-    def tick(self, key, checked=True):
-        if key not in self._required:
-            return
-        if checked:
-            self._ticked.add(key)
-        else:
-            self._ticked.discard(key)
+    def acknowledge(self, done=True):
+        self._acknowledged = bool(done)
+
+    @property
+    def _ack_ok(self):
+        return self._acknowledged or not self.warning_groups
 
     def set_typed(self, text):
         self._typed = str(text or "")
@@ -37,16 +43,17 @@ class AckState:
     def ready(self):
         if not self.model.write_rows:
             return False
-        return not (self._required - self._ticked) and self._typed_ok
+        return self._ack_ok and self._typed_ok
 
     @property
     def blocking_reason(self):
         if not self.model.write_rows:
             return "There is nothing to upload."
-        outstanding = len(self._required - self._ticked)
-        if outstanding:
-            return "Tick the remaining {} item{} above.".format(
-                outstanding, "" if outstanding == 1 else "s")
+        if not self._ack_ok:
+            return ("Read the {} item{} above, then confirm you have "
+                    "reviewed them.".format(
+                        self.warning_groups,
+                        "" if self.warning_groups == 1 else "s"))
         if not self._typed_ok:
             return "Type {} to confirm.".format(self.model.write_rows)
         return ""
@@ -439,19 +446,24 @@ def build_ui(config, log_path, snapshot_path):
     import ipywidgets as widgets
     from IPython.display import display
 
+    wide = widgets.Layout(width="auto")
     upload = widgets.FileUpload(accept=".csv", multiple=False,
-                                description="Choose CSV")
+                                description="Choose CSV", layout=wide)
     token = widgets.Password(description="Login:",
                              placeholder="paste your VTEX login here")
-    check_only = widgets.Checkbox(value=False,
+    # Widget descriptions are cut to the widget's width by default, which is
+    # how "Abandon the unfinished upload log" became "Abandon the unfinished
+    # uploa...". An automatic width lets the label decide.
+    check_only = widgets.Checkbox(value=False, indent=False, layout=wide,
                                   description="Check only - do not upload")
     abandon = widgets.Checkbox(
-        value=False,
+        value=False, indent=False, layout=wide,
         description=("Abandon the unfinished upload log - rows already "
                      "written stay written in VTEX"))
     start = widgets.Button(description="Check this file",
-                           button_style="primary")
-    undo = widgets.Button(description="Put the previous prices back")
+                           button_style="primary", layout=wide)
+    undo = widgets.Button(description="Put the previous prices back",
+                          layout=wide)
     where = widgets.Label(
         value="{} accounts configured: {}. Log: {}".format(
             len(config.accounts), ", ".join(sorted(config.accounts)),
@@ -508,8 +520,7 @@ def run_interactive(config, ui, folder=None):
     def start_run():
         from vtex_fixed_price_uploader.reader import save_snapshot
         from vtex_fixed_price_uploader.report import (
-            ack_label_html, download_link_html, findings_csv, render_html,
-            scope_sentence)
+            download_link_html, findings_csv, render_html, scope_sentence)
         from vtex_fixed_price_uploader.runner import preflight
 
         if not ui["upload"].value:
@@ -551,45 +562,43 @@ def run_interactive(config, ui, folder=None):
 
         state = AckState(pre.model)
         groups = pre.model.warnings + pre.model.ending
-        boxes, ack_rows = [], []
-        for group in groups:
-            # The checkbox carries no description of its own: a widget
-            # description is truncated to its width, which is what hid the end
-            # of every sentence. The text lives in an HTML label beside it,
-            # where it wraps instead.
-            box = widgets.Checkbox(
-                value=False, indent=False,
-                layout=widgets.Layout(width="28px", flex="0 0 auto",
-                                      margin="0"))
-            label = widgets.HTML(value=ack_label_html(group))
-            ack_rows.append(widgets.HBox(
-                [box, label],
-                layout=widgets.Layout(align_items="flex-start",
-                                      margin="0 0 8px 0")))
-            boxes.append(box)
+        # One confirmation, not one per group. The items themselves are in
+        # the report above, in full - a widget label truncates and a column of
+        # checkboxes pushed the upload button off the screen.
+        reviewed = widgets.Button(
+            description="I have reviewed the {} item{} above".format(
+                len(groups), "" if len(groups) == 1 else "s"),
+            button_style="primary",
+            layout=widgets.Layout(width="auto"))
 
         typed = widgets.Text(description="Confirm:", placeholder=str(
             pre.model.write_rows))
         go = widgets.Button(
             description="Upload {:,} prices".format(pre.model.write_rows),
-            button_style="danger", disabled=True)
+            button_style="danger", disabled=True,
+            layout=widgets.Layout(width="auto"))
         # The scope belongs where the click happens, not in the verdict block
         # far above it, separated by every rendered item.
         scope = widgets.HTML(value=(
             '<div style="font-size:14px;font-weight:600;'
             'margin-top:10px">{}</div>'.format(scope_sentence(pre.model))))
-        recheck = widgets.Button(description="Check what landed (no writing)")
+        recheck = widgets.Button(description="Check what landed (no writing)",
+                                 layout=widgets.Layout(width="auto"))
         why = widgets.Label(value=state.blocking_reason)
 
         def refresh(_change=None):
-            for box, group in zip(boxes, groups):
-                state.tick(group.key, box.value)
             state.set_typed(typed.value)
             go.disabled = not state.ready
             why.value = state.blocking_reason
 
-        for box in boxes:
-            box.observe(refresh, names="value")
+        def on_reviewed(_button):
+            state.acknowledge(True)
+            reviewed.disabled = True
+            reviewed.button_style = "success"
+            reviewed.description = "Reviewed - upload unlocked"
+            refresh()
+
+        reviewed.on_click(on_reviewed)
         typed.observe(refresh, names="value")
 
         def on_go(_button):
@@ -617,7 +626,7 @@ def run_interactive(config, ui, folder=None):
         go.on_click(on_go)
         recheck.on_click(on_recheck)
 
-        controls = list(ack_rows)
+        controls = [reviewed] if groups else []
         if pre.model.needs_typed_confirmation:
             controls.append(typed)
         controls.extend([scope, go, why, recheck])
@@ -625,6 +634,12 @@ def run_interactive(config, ui, folder=None):
         refresh()
 
     def on_undo(_button):
+        # The undo used to be offered into the same output the upload screen
+        # was still holding, so "Upload N prices", "Check what landed" and
+        # "Yes, put those prices back" sat on screen together with nothing
+        # saying which step each belonged to. Clearing first means the screen
+        # shows one decision at a time.
+        out.clear_output()
         with out:
             try:
                 offer_undo()
@@ -647,11 +662,19 @@ def run_interactive(config, ui, folder=None):
         snapshot = load_snapshot(snapshot_path)
         say(restore_preview(pairs, snapshot), "warn")
 
+        wide = widgets.Layout(width="auto")
         confirm = widgets.Button(description="Yes, put those prices back",
-                                 button_style="danger")
+                                 button_style="danger", layout=wide)
+        cancel = widgets.Button(
+            description="No, leave the prices as they are", layout=wide)
+
+        def settle():
+            """An undo offer is answered once. Both buttons then stand down."""
+            confirm.disabled = True
+            cancel.disabled = True
 
         def on_confirm(_click):
-            confirm.disabled = True
+            settle()
             with out:
                 try:
                     run_restore(config, snapshot, pairs, ui["token"].value,
@@ -659,8 +682,15 @@ def run_interactive(config, ui, folder=None):
                 except Exception as exc:              # noqa: BLE001
                     excuse(exc)
 
+        def on_cancel(_click):
+            settle()
+            with out:
+                say("Nothing was put back. The prices from the last upload "
+                    "are still live in VTEX.", "info")
+
         confirm.on_click(on_confirm)
-        display(confirm)
+        cancel.on_click(on_cancel)
+        display(widgets.HBox([confirm, cancel]))
 
     ui["start"].on_click(on_start)
     ui["undo"].on_click(on_undo)

@@ -91,28 +91,6 @@ def _note(text):
             '</div>').format(muted=MUTED, text=html.escape(text))
 
 
-def ack_label_html(group):
-    """The full text of one thing being acknowledged, beside its checkbox.
-
-    This label was cut to 70 characters and then cut again by the widget's own
-    width, so the operator ticked a box whose sentence they could not finish
-    reading. Acknowledgement is a decision, and a decision has to be legible
-    at the point it is made - including the fix instruction, so the row stands
-    on its own without scrolling back up to the report.
-    """
-    return ('<div style="font-family:{font};color:{ink};font-size:14px;'
-            'line-height:1.5;padding-top:2px">'
-            '<strong>{product}</strong>'
-            '<span style="color:{muted};font-size:12px;margin-left:8px">'
-            '{badge}</span><br>{message}'
-            '<span style="color:{muted}"> {detail}</span></div>').format(
-                font=FONT, ink=INK, muted=MUTED,
-                product=html.escape(group.product),
-                badge=html.escape(_regions_label(group.codes)),
-                message=html.escape(group.message),
-                detail=html.escape(group.detail))
-
-
 def render_notice(text, tone="info"):
     """A single paragraph that has to be read, not skimmed past."""
     return _shell(_panel(
