@@ -13,6 +13,8 @@ re-deriving the rule:
        in ten - and a successful read of "there is nothing here".
   401  the credential was rejected. Never stored: it raises
        `AuthenticationError` and halts the read.
+  403  the credential cannot read pricing for the account. Never stored: it
+       raises `PricingPermissionError` and halts the read.
   429  still throttled after the retries in `pricing.fetch_prices`. FAILED:
        nothing was read, and the row's true state is unknown.
   0    `pricing.NETWORK_FAILURE_STATUS` - transport or response-body failure
@@ -34,13 +36,15 @@ from vtex_fixed_price_uploader.pricing import (
     NETWORK_FAILURE_STATUS, fetch_prices)
 
 UNAUTHORIZED_STATUS = 401
+FORBIDDEN_STATUS = 403
 
 _log = logging.getLogger(__name__)
 
 # What a fetch may legitimately raise. `fetch_prices` handles these itself and
 # returns the sentinel, but an injected fetch may not, and a transport failure
 # is a read outcome, not a bug. Everything else - TypeError from a changed
-# signature, AuthenticationError from fix 1 - propagates and stops the read.
+# signature, or either credential halt exception - propagates and stops the
+# read.
 TRANSPORT_FAILURES = (
     urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError)
 
@@ -96,6 +100,10 @@ class AuthenticationError(Exception):
     """
 
 
+class PricingPermissionError(Exception):
+    """The credential is valid but cannot read pricing for an account."""
+
+
 def read_all(config, skus, token, workers=10, progress=None, fetch=None,
              errors=None) -> dict[tuple[str, str], tuple[int, dict | None]]:
     """{(sku, account): (http_status, payload)} for the full matrix.
@@ -136,6 +144,11 @@ def read_all(config, skus, token, workers=10, progress=None, fetch=None,
                 "the pricing API rejected the credential (HTTP 401) reading "
                 "SKU {} in account {}; the read is halted".format(
                     sku, account))
+        if status == FORBIDDEN_STATUS:
+            raise PricingPermissionError(
+                "this login cannot read pricing for account {}; re-running "
+                "will not help, so ask for pricing read permission".format(
+                    account))
         with lock:
             out[pair] = (status, data)
             if note is not None and errors is not None:

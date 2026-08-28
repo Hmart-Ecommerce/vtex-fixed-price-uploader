@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from vtex_fixed_price_uploader import writer as writer_module
 from vtex_fixed_price_uploader.auth import check_headroom
 from vtex_fixed_price_uploader.compose import compose
+from vtex_fixed_price_uploader.config import check_account_allowed
 from vtex_fixed_price_uploader.names import fetch_names
 from vtex_fixed_price_uploader.parser import parse_csv
 from vtex_fixed_price_uploader.pricing import fetch_prices
@@ -33,8 +34,11 @@ class Preflight:
 
 @dataclass(frozen=True)
 class ApplyResult:
+    """Write counts; status 0 is unknown because the write may have landed."""
+
     written: int = 0
     failed: int = 0
+    unknown: int = 0
     skipped: int = 0
     halted: str = ""
 
@@ -47,11 +51,11 @@ class CredentialRejected(Exception):
 
 
 def check_credential(config, token, fetch=None):
-    """Raise CredentialRejected when a single probe read returns 401.
+    """Raise CredentialRejected when a probe returns 401 or 403.
 
-    Any other status, including 404, proves the credential works. The probe
-    SKU may simply not exist in that account. The error never contains the
-    token.
+    A 404 proves the credential works; the probe SKU may simply not exist in
+    that account. A 403 proves authentication but also proves this login lacks
+    pricing read permission. Error messages never contain the token.
     """
     fetch = fetch or fetch_prices
     account = sorted(config.accounts.values())[0]
@@ -59,6 +63,10 @@ def check_credential(config, token, fetch=None):
     if status == 401:
         raise CredentialRejected(
             "Your login was not accepted. Get a fresh login and try again.")
+    if status == 403:
+        raise CredentialRejected(
+            "This login cannot read pricing for account {}; re-running will "
+            "not help; ask for pricing read permission.".format(account))
 
 
 def preflight(config, source, token, now=None, progress=None, fetch=None,
@@ -133,6 +141,13 @@ def apply(config, pre, token, log, progress=None, post=None, fetch=None,
             "stay written in VTEX. Run Apply again to start a new "
             "upload.".format(already_written, rows)))
 
+    targets = sorted(pre.write_pairs)
+    # Keep the invariant inside apply as well as inside the default writer so
+    # an injected writer cannot bypass the account allowlist. Check every
+    # target before credential work or a write-log start record.
+    for _sku, account in targets:
+        check_account_allowed(config, account)
+
     try:
         check_credential(config, token, fetch=fetch)
     except CredentialRejected as exc:
@@ -155,7 +170,6 @@ def apply(config, pre, token, log, progress=None, post=None, fetch=None,
                 "Apply with abandon_unfinished=True.".format(
                     exc, already_written, rows)))
 
-    targets = sorted(pre.write_pairs)
     remaining_writes = sum(
         1 for sku, account in targets
         if (str(sku), account) not in already)
@@ -165,7 +179,7 @@ def apply(config, pre, token, log, progress=None, post=None, fetch=None,
     if pending is None:
         log.begin(len(pre.write_pairs), pre.csv_hash, pre.resume_pairs_hash)
 
-    written = failed = skipped = 0
+    written = failed = unknown = skipped = 0
     halted = ""
 
     for index, (sku, account) in enumerate(targets, start=1):
@@ -195,6 +209,8 @@ def apply(config, pre, token, log, progress=None, post=None, fetch=None,
             break
         if status == 200:
             written += 1
+        elif status == 0:
+            unknown += 1
         else:
             failed += 1
         if progress:
@@ -202,5 +218,5 @@ def apply(config, pre, token, log, progress=None, post=None, fetch=None,
 
     if not halted:
         log.finish()
-    return ApplyResult(written=written, failed=failed, skipped=skipped,
-                       halted=halted)
+    return ApplyResult(written=written, failed=failed, unknown=unknown,
+                       skipped=skipped, halted=halted)

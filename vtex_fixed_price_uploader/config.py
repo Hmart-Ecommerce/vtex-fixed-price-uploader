@@ -52,6 +52,21 @@ def load_config(source):
             "'accounts' must map string region codes to non-empty string "
             "account names")
 
+    regions_by_account: dict[str, list[str]] = {}
+    for region, account in accounts.items():
+        regions_by_account.setdefault(account, []).append(region)
+    duplicates = [
+        (account, sorted(regions))
+        for account, regions in regions_by_account.items()
+        if len(regions) > 1
+    ]
+    if duplicates:
+        account, regions = sorted(duplicates)[0]
+        raise ValueError(
+            "account {!r} is assigned to multiple region codes: {}; each "
+            "account must have exactly one region code".format(
+                account, ", ".join(regions)))
+
     trade_policy = str(raw.get("trade_policy", "1"))
     if trade_policy != "1":
         raise ValueError(
@@ -66,6 +81,12 @@ def load_config(source):
           or not all(isinstance(account, str) for account in never_write)):
         raise ValueError(
             "'never_write' must be a list or tuple containing only strings")
+
+    overlap = sorted(set(accounts.values()).intersection(never_write))
+    if overlap:
+        raise ValueError(
+            "account {!r} appears in both accounts and never_write; remove "
+            "it from one list".format(overlap[0]))
 
     # Same strict style as `accounts` and `never_write`: a wrong TYPE here is
     # accepted silently by a truthiness test and then dies mid-run, deep in a

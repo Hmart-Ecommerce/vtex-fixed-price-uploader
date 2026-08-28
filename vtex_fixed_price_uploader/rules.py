@@ -1,6 +1,6 @@
-"""The fourteen checks that run before anything is written.
+"""The fifteen checks that run before anything is written.
 
-Seven blocking rules remove a row from the batch; the operator cannot consent
+Eight blocking rules remove a row from the batch; the operator cannot consent
 past them. Six warning rules are shown and acknowledged per group. One
 informational rule is reported and needs no action.
 
@@ -38,7 +38,7 @@ DEEP_DISCOUNT_FLOOR = 0.40   # promo below 40% of base is >60% off
 SEVERITY = {
     "B1": "blocking", "B2": "blocking", "B3": "blocking",
     "B4": "blocking", "B5": "blocking", "B6": "blocking",
-    "B7": "blocking",
+    "B7": "blocking", "B8": "blocking",
     "W1": "warning", "W2": "warning", "W3": "warning",
     "W4": "warning", "W5": "warning", "W6": "warning",
     "I1": "info",
@@ -121,21 +121,26 @@ def _blocking_for_row(row: Row, status: int) -> list[Finding]:
             "Remove this region from your file, or have the product added to "
             "that region's catalog before uploading."))
 
-    for label, value in (("price", row.promo), ("crossed-out price", row.list_price)):
+    for label, value, column in (
+            ("price", row.promo, "promoPrice" + row.code),
+            ("crossed-out price", row.list_price, "listPrice" + row.code)):
         if value is None:
             continue
         if value <= 0 or value > MAX_PRICE:
             out.append(_finding(
                 "B5", key,
                 "This {} looks wrong.".format(label),
-                "{} is outside the accepted range of $0.01 to {}.".format(
-                    _money_str(value), _money_str(MAX_PRICE))))
+                "Line {}, column {}: {} is outside the accepted range of "
+                "$0.01 to {}. Correct the price before uploading.".format(
+                    row.line, column, _money_str(value),
+                    _money_str(MAX_PRICE))))
 
     if row.start and row.end and row.end <= row.start:
         out.append(_finding(
             "B2", key,
             "The end date is before the start date.",
-            "{} to {}".format(row.start.date(), row.end.date())))
+            "Line {}: {} to {}. Correct the dates so the end is after the "
+            "start.".format(row.line, row.start.date(), row.end.date())))
 
     return out
 
@@ -144,8 +149,22 @@ def _b3(row: Row, now: datetime) -> list[Finding]:
     key = (row.sku, row.code, row.account)
     if row.end and row.end <= now:
         return [_finding("B3", key, "These dates have already passed.",
-                         "The promotion ended {}.".format(row.end.date()))]
+                         "Line {}: the promotion ended {}. Update the dates "
+                         "or remove this row before uploading.".format(
+                             row.line, row.end.date()))]
     return []
+
+
+def _b8(row: Row, composition: Composition | None) -> list[Finding]:
+    """Refuse a replacing write when stored entries cannot be classified."""
+    if composition is None or not composition.unrecognised:
+        return []
+    key = (row.sku, row.code, row.account)
+    return [_finding(
+        "B8", key,
+        "Stored pricing contains an entry this tool cannot classify.",
+        "This price will not be written. Have a human review the stored "
+        "fixed-price entries for this SKU and account before uploading.")]
 
 
 def _b1(rows: Sequence[Row]) -> list[Finding]:
@@ -290,10 +309,15 @@ def evaluate(rows: Sequence[Row],
     """
     findings = list(_b1(rows))
     ordered = sorted(rows, key=lambda r: (r.sku, r.account, r.line))
+    checked_compositions: set[tuple[str, str]] = set()
     for row in ordered:
         status, data = reads.get((row.sku, row.account), (0, None))
         findings.extend(_blocking_for_row(row, status))
         findings.extend(_b3(row, now))
+        key = (row.sku, row.account)
+        if key not in checked_compositions:
+            checked_compositions.add(key)
+            findings.extend(_b8(row, compositions.get(key)))
 
     by_pair: dict[tuple[str, str], list[Row]] = {}
     for row in ordered:

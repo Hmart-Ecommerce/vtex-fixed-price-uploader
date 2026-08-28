@@ -58,6 +58,20 @@ def test_the_401_halt_never_reveals_the_token():
     assert "expired-token" not in repr(caught.value)
 
 
+def test_403_halts_with_pricing_permission_guidance():
+    def forbidden(account, sku, token, timeout=30, retries=2):
+        return 403, None
+
+    with pytest.raises(reader_module.PricingPermissionError) as caught:
+        read_all(CFG, ["111"], "super-secret", fetch=forbidden)
+
+    message = str(caught.value)
+    assert "cannot read pricing" in message
+    assert "acct_one" in message or "acct_two" in message
+    assert "re-running will not help" in message
+    assert "super-secret" not in message
+
+
 def test_progress_is_reported_for_every_pair():
     seen = []
     read_all(CFG, ["111", "222"], "tok", fetch=fake_fetch,

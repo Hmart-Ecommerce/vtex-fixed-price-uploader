@@ -39,12 +39,11 @@ def test_never_write_account_is_refused():
         check_account_allowed(load_config(RAW), "acct_master")
 
 
-def test_never_write_wins_even_if_also_in_allowlist():
-    """Defence in depth: a typo adding the master to accounts must not open it."""
+def test_account_cannot_be_both_allowed_and_never_write():
     raw = {"accounts": {"R1": "acct_master"}, "never_write": ["acct_master"],
            "trade_policy": "1"}
-    with pytest.raises(DisallowedAccount):
-        check_account_allowed(load_config(raw), "acct_master")
+    with pytest.raises(ValueError, match="acct_master.*accounts.*never_write"):
+        load_config(raw)
 
 
 def test_missing_accounts_key_is_rejected():
@@ -104,6 +103,16 @@ def test_config_file_with_non_mapping_json_is_rejected_cleanly(tmp_path):
 def test_accounts_must_map_string_keys_to_non_empty_string_values(accounts):
     raw = {**RAW, "accounts": accounts}
     with pytest.raises(ValueError, match="accounts"):
+        load_config(raw)
+
+
+def test_two_region_codes_cannot_share_one_account():
+    raw = {
+        "accounts": {"R1": "acct_one", "R2": "acct_one"},
+        "never_write": [],
+        "trade_policy": "1",
+    }
+    with pytest.raises(ValueError, match="acct_one.*R1.*R2"):
         load_config(raw)
 
 

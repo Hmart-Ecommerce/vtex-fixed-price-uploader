@@ -86,6 +86,7 @@ def test_every_rule_severity_is_pinned_by_id():
         "B5": "blocking",
         "B6": "blocking",
         "B7": "blocking",
+        "B8": "blocking",
         "W1": "warning",
         "W2": "warning",
         "W3": "warning",
@@ -100,6 +101,19 @@ def test_a_blocking_rule_actually_excludes_the_pair_from_the_batch():
     r = row(start="2026-09-18T00:00:00", end="2026-08-28T00:00:00")
     findings = run([r])
     assert "B2" in rules_fired(findings)
+    assert blocked_pairs(findings) == {("111", "acct_one")}
+
+
+def test_unrecognised_stored_entry_blocks_the_pair_instead_of_deleting_it():
+    orphan = {"value": 4.99, "listPrice": 8.99, "minQuantity": 1}
+    reads = {("111", "acct_one"): (200, payload(fixed=[orphan]))}
+
+    findings = run([row()], reads)
+
+    b8 = [finding for finding in findings if finding.rule == "B8"]
+    assert len(b8) == 1
+    assert b8[0].severity == "blocking"
+    assert "human" in b8[0].detail.lower()
     assert blocked_pairs(findings) == {("111", "acct_one")}
 
 
@@ -167,9 +181,23 @@ def test_b2_end_before_start():
     assert "B2" in rules_fired(run([r]))
 
 
+def test_b2_detail_names_the_line_and_tells_the_operator_to_correct_dates():
+    r = row(start="2026-09-18T00:00:00", end="2026-08-28T00:00:00", line=7)
+    detail = detail_of(run([r]), "B2")
+    assert "Line 7" in detail
+    assert "Correct" in detail
+
+
 def test_b3_window_entirely_in_the_past():
     r = row(start="2026-01-01T00:00:00", end="2026-02-01T00:00:00")
     assert "B3" in rules_fired(run([r]))
+
+
+def test_b3_detail_names_the_line_and_tells_the_operator_to_update_dates():
+    r = row(start="2026-01-01T00:00:00", end="2026-02-01T00:00:00", line=8)
+    detail = detail_of(run([r]), "B3")
+    assert "Line 8" in detail
+    assert "Update" in detail
 
 
 def test_b4_sku_missing_from_account():
@@ -261,6 +289,16 @@ def test_b5_absurd_price():
 
 def test_b5_absurd_list_price():
     assert "B5" in rules_fired(run([row(list_price=5000.0)]))
+
+
+def test_b5_detail_names_the_line_column_and_action_for_each_price():
+    findings = run([row(promo=1200.0, list_price=5000.0, line=9)])
+    details = [finding.detail for finding in findings if finding.rule == "B5"]
+    assert len(details) == 2
+    assert any("Line 9" in detail and "promoPriceR1" in detail
+               and "Correct" in detail for detail in details)
+    assert any("Line 9" in detail and "listPriceR1" in detail
+               and "Correct" in detail for detail in details)
 
 
 def test_b5_ignores_a_missing_list_price():
@@ -455,20 +493,6 @@ def test_i1_does_not_fire_when_the_sku_is_absent_from_that_account():
              ("111", "acct_two"): (404, None)}
     findings = run([r], reads)
     assert not any(f.rule == "I1" for f in findings)
-
-
-def test_i1_preserves_each_region_code_when_accounts_are_shared():
-    config = load_config({
-        "accounts": {"R1": "acct_one", "R2": "acct_one"},
-        "never_write": ["acct_master"],
-        "trade_policy": "1",
-    })
-    rows = [row(code="R1", account="acct_one")]
-    reads = {("111", "acct_one"): (200, payload())}
-
-    findings = evaluate(rows, reads, {}, config, NOW)
-
-    assert [(finding.rule, finding.code) for finding in findings] == [("I1", "R2")]
 
 
 # --- Fix 3: suppression is gated on a missing base, not on blocked-ness. ---

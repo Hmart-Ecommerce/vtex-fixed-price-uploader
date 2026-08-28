@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from vtex_fixed_price_uploader.auth import TokenExpiringSoon
-from vtex_fixed_price_uploader.config import load_config
+from vtex_fixed_price_uploader.config import DisallowedAccount, load_config
 from vtex_fixed_price_uploader.runner import (
     CredentialRejected,
     apply,
@@ -164,6 +164,26 @@ def test_apply_writes_every_pair(tmp_path):
     assert set(calls) == pre.write_pairs
 
 
+def test_apply_guards_every_account_before_opening_the_log(tmp_path):
+    pre = run_preflight()
+    composition = pre.compositions[("111", "acct_one")]
+    unsafe = replace(
+        pre,
+        write_pairs=frozenset({("111", "acct_stranger")}),
+        compositions={("111", "acct_stranger"): composition},
+    )
+    path = str(tmp_path / "w.jsonl")
+    calls = []
+
+    with pytest.raises(DisallowedAccount, match="acct_stranger"):
+        apply(
+            CFG, unsafe, "tok", WriteLog(path), fetch=ok_fetch,
+            post=lambda *args, **kwargs: calls.append(1) or (200, ""))
+
+    assert calls == []
+    assert WriteLog(path).unfinished() is None
+
+
 def test_apply_halts_the_whole_run_on_401(tmp_path):
     pre = run_preflight()
     calls = []
@@ -191,6 +211,21 @@ def test_apply_records_a_failure_and_continues(tmp_path):
     result = apply(CFG, pre, "tok", log, post=fake_post, fetch=ok_fetch)
     assert result.written == 1 and result.failed == 1
     assert not result.halted
+
+
+def test_apply_counts_status_zero_as_unknown_not_failed(tmp_path):
+    pre = run_preflight()
+
+    def uncertain_post(config, account, sku, payload, token, **kwargs):
+        return (0, "connection ended") if account == "acct_one" else (200, "")
+
+    result = apply(
+        CFG, pre, "tok", WriteLog(str(tmp_path / "w.jsonl")),
+        post=uncertain_post, fetch=ok_fetch)
+
+    assert result.written == 1
+    assert result.unknown == 1
+    assert result.failed == 0
 
 
 def test_apply_skips_pairs_already_in_the_log(tmp_path):
@@ -249,6 +284,15 @@ def test_credential_rejects_a_401():
 def test_credential_tolerates_a_404_probe():
     """A 404 proves the credential works; the probe SKU simply does not exist."""
     check_credential(CFG, "tok", fetch=lambda a, s, t, **k: (404, None))
+
+
+def test_credential_rejects_a_403_with_pricing_permission_guidance():
+    with pytest.raises(CredentialRejected, match="cannot read pricing") as caught:
+        check_credential(
+            CFG, "super-secret",
+            fetch=lambda account, sku, token, **kwargs: (403, None))
+    assert "re-running will not help" in str(caught.value)
+    assert "super-secret" not in str(caught.value)
 
 
 def test_credential_error_never_contains_the_token():
