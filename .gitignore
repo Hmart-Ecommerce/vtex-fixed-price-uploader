@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.superpowers/
+build/
+dist/
+.venv/
+venv/
+
+# Deployment-specific data never belongs in this repository.
+accounts.json
+snapshot.json
+write-log.jsonl
+*.csv
