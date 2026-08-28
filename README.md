@@ -37,7 +37,7 @@ them to the package, notebook, or repository.
 
 1. Put `accounts.json` and the price CSV in the Drive folder configured by
    `FOLDER` in `notebook/price_upload.ipynb`.
-2. Open the notebook in Google Colab and run its two code cells in order.
+2. Open the notebook in Google Colab and press `Run all`.
 3. Choose the CSV, paste the login value, and select **Check this file**.
 4. Review every group. Use check-only mode to stop before writes, or acknowledge
    each group and complete any batch-size confirmation to enable upload.

@@ -815,3 +815,34 @@ def test_answering_the_undo_stands_both_buttons_down(monkeypatch, tmp_path):
     confirm.click()
     assert confirm.disabled is True
     assert cancel.disabled is True
+
+
+# --- the settle wait has to look alive ----------------------------------
+
+def test_the_settle_wait_counts_down_to_zero():
+    """Two minutes of silence reads as a frozen tab.
+
+    The operator's instinct then - reload, or press Upload again - is the
+    worst thing they can do while VTEX settles, so the wait reports itself.
+    """
+    seen, slept = [], []
+    paced = ui.counting_sleep(lambda left, total: seen.append((left, total)),
+                              sleep=slept.append)
+    paced(3)
+    assert seen[0] == (3, 3)
+    assert seen[-1] == (0, 3)
+    assert [left for left, _ in seen] == [3, 2, 1, 0]
+    assert slept == [1, 1, 1], "the wait must still be the wait"
+
+
+def test_without_a_screen_the_wait_stays_a_single_sleep():
+    slept = []
+    ui.counting_sleep(None, sleep=slept.append)(120)
+    assert slept == [120]
+
+
+def test_a_zero_wait_never_reports_a_countdown():
+    seen, slept = [], []
+    ui.counting_sleep(lambda *a: seen.append(a), sleep=slept.append)(0)
+    assert seen == []
+    assert slept == [0]

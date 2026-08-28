@@ -5,6 +5,7 @@ tested without notebook dependencies. The optional widgets are imported only
 inside the functions that use them.
 """
 
+import time
 
 class AckState:
     """Track the one acknowledgement of the warnings, and typed confirmation.
@@ -303,9 +304,34 @@ def _emit_verification(check, say, show):
                        tone="ok" if clean else "bad"))
 
 
+def counting_sleep(countdown, sleep=None):
+    """A sleep that reports what is left of itself, one second at a time.
+
+    The settle wait is two minutes of nothing. A sentence saying so is better
+    than silence, but a number that moves is the difference between "it is
+    working" and "it is stuck" - and a stuck-looking tab is what makes an
+    operator reload or press Upload a second time.
+    """
+    real_sleep = sleep or time.sleep
+
+    def paced(seconds):
+        total = int(seconds)
+        if countdown is None or total <= 0:
+            real_sleep(seconds)
+            return
+        countdown(total, total)
+        remaining = total
+        while remaining > 0:
+            real_sleep(1)
+            remaining -= 1
+            countdown(remaining, total)
+
+    return paced
+
+
 def apply_and_verify(config, pre, token, log, say, progress=None,
                      abandon_unfinished=False, apply_fn=None, verify_fn=None,
-                     show=None):
+                     show=None, countdown=None):
     """Write, then read back - on the halt path as well as the clean one.
 
     A halt usually arrives after hundreds of rows are already in VTEX. An
@@ -326,12 +352,20 @@ def apply_and_verify(config, pre, token, log, say, progress=None,
     # instinct - reload, or press Upload again - is the worst thing they can
     # do here.
     _emit(SETTLE_NOTICE, "info", say, show)
-    check = verify_fn(config, pre, token)
+    check = _verify(verify_fn, config, pre, token, countdown)
     _emit_verification(check, say, show)
     return result, check
 
 
-def verify_only(config, pre, token, say, verify_fn=None, show=None):
+def _verify(verify_fn, config, pre, token, countdown):
+    """Call verify, pacing its settle wait only when someone is watching."""
+    if countdown is None:
+        return verify_fn(config, pre, token)
+    return verify_fn(config, pre, token, sleep=counting_sleep(countdown))
+
+
+def verify_only(config, pre, token, say, verify_fn=None, show=None,
+                countdown=None):
     """Read the rows back again without writing anything.
 
     This is how an operator settles an unreadable row, or checks a halted run
@@ -340,7 +374,7 @@ def verify_only(config, pre, token, say, verify_fn=None, show=None):
     if verify_fn is None:
         from vtex_fixed_price_uploader.verify import verify as verify_fn
     _emit("{} Nothing is written.".format(SETTLE_NOTICE), "info", say, show)
-    check = verify_fn(config, pre, token)
+    check = _verify(verify_fn, config, pre, token, countdown)
     _emit_verification(check, say, show)
     return check
 
@@ -501,6 +535,21 @@ def run_interactive(config, ui, folder=None):
         """Every block the operator reads goes through here, already styled."""
         out.append_display_data(HTML(markup))
 
+    def make_countdown():
+        """A bar that empties while VTEX settles, so the wait looks alive."""
+        bar = widgets.IntProgress(min=0, max=1, value=1,
+                                  description="Settling:")
+        label = widgets.Label(value="")
+        display(widgets.HBox([bar, label]))
+
+        def countdown(remaining, total):
+            bar.max = total or 1
+            bar.value = total - remaining
+            label.value = "{}:{:02d} left before the read-back".format(
+                remaining // 60, remaining % 60)
+
+        return countdown
+
     def say(text, tone="info"):
         from vtex_fixed_price_uploader.report import render_notice
         show(render_notice(text, tone))
@@ -612,14 +661,16 @@ def run_interactive(config, ui, folder=None):
                             "VTEX.", "warn")
                     apply_and_verify(config, pre, ui["token"].value, log,
                                      say, progress=progress,
-                                     abandon_unfinished=abandon, show=show)
+                                     abandon_unfinished=abandon, show=show,
+                                     countdown=make_countdown())
                 except Exception as exc:              # noqa: BLE001
                     excuse(exc)
 
         def on_recheck(_button):
             with out:
                 try:
-                    verify_only(config, pre, ui["token"].value, say, show=show)
+                    verify_only(config, pre, ui["token"].value, say,
+                                show=show, countdown=make_countdown())
                 except Exception as exc:              # noqa: BLE001
                     excuse(exc)
 
