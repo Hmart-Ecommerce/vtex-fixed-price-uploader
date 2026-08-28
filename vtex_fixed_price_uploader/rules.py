@@ -1,7 +1,7 @@
-"""The fifteen checks that run before anything is written.
+"""The sixteen checks that run before anything is written.
 
 Eight blocking rules remove a row from the batch; the operator cannot consent
-past them. Six warning rules are shown and acknowledged per group. One
+past them. Seven warning rules are shown and acknowledged per group. One
 informational rule is reported and needs no action.
 
 Every rule here was drawn from a defect observed in production, not from
@@ -41,6 +41,7 @@ SEVERITY = {
     "B7": "blocking", "B8": "blocking",
     "W1": "warning", "W2": "warning", "W3": "warning",
     "W4": "warning", "W5": "warning", "W6": "warning",
+    "W7": "warning",
     "I1": "info",
 }
 
@@ -290,6 +291,64 @@ def _w6(pair_rows: Sequence[Row], composition: Composition | None,
     return out
 
 
+def _w7(pair_rows: Sequence[Row], composition: Composition | None,
+        base: float | None, now: datetime) -> list[Finding]:
+    """Days a dropped entry was covering that the new campaign does not reach.
+
+    W6 asks "does this end a campaign that would have run AFTER mine?". This
+    asks the mirror question: "does this leave a hole BEFORE mine starts?".
+    Observed live in QA - a campaign running Aug 28 to Sep 03 was replaced by
+    one running Sep 01 to Sep 10. Composition was right and W6 was correctly
+    silent, because nothing survived past the new campaign; yet four days
+    silently went back to full price. To the operator both are the same
+    surprise, so both are warnings.
+
+    Compared against the EARLIEST start across every CSV row for the pair, the
+    mirror of W6's latest end. A CSV row with no usable window is written
+    unbounded and so covers everything before it - it can never leave a gap.
+    Computed once per pair so one dropped entry cannot render two identical
+    checkboxes for one decision.
+    """
+    if not pair_rows or composition is None:
+        return []
+
+    starts = [_row_window(r)[0] for r in pair_rows]
+    if any(start is None for start in starts):
+        return []
+    csv_start = min(starts)
+
+    first = pair_rows[0]
+    key = (first.sku, first.code, first.account)
+    out: list[Finding] = []
+    seen: set[Finding] = set()
+    for dropped in composition.dropped:
+        # An expired entry is covering nothing today, so removing it loses
+        # nothing. Days already past cannot surprise anyone either, which is
+        # why the gap is clamped to `now` rather than read off the entry.
+        if expired(dropped, now):
+            continue
+        starts_at, ends_at = entry_window(dropped)
+        gap_start = now if starts_at is None else max(starts_at, now)
+        gap_end = csv_start if ends_at is None else min(ends_at, csv_start)
+        if gap_start >= gap_end:
+            continue
+        price = "" if base is None else " of {}".format(_money_str(base))
+        finding = _finding(
+            "W7", key,
+            "Uploading this leaves {} to {} with no promotion - the product "
+            "goes back to its normal price{} on those days.".format(
+                gap_start.date(), gap_end.date(), price),
+            "The promotion being replaced was covering those days and your "
+            "file does not start until {}. Move your start date to {} or add "
+            "a row covering the days in between.".format(
+                csv_start.date(), gap_start.date()))
+        if finding in seen:
+            continue
+        seen.add(finding)
+        out.append(finding)
+    return out
+
+
 def evaluate(rows: Sequence[Row],
              reads: Mapping[tuple[str, str], tuple[int, dict | None]],
              compositions: Mapping[tuple[str, str], Composition],
@@ -334,6 +393,8 @@ def evaluate(rows: Sequence[Row],
         if key not in done:
             done.add(key)
             findings.extend(_w6(by_pair[key], compositions.get(key), now))
+            findings.extend(
+                _w7(by_pair[key], compositions.get(key), base, now))
 
     covered = {(r.sku, r.code) for r in rows}
     codes_by_account: dict[str, list[str]] = {}

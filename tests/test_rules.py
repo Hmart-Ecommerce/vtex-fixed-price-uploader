@@ -93,6 +93,7 @@ def test_every_rule_severity_is_pinned_by_id():
         "W4": "warning",
         "W5": "warning",
         "W6": "warning",
+        "W7": "warning",
         "I1": "info",
     }
 
@@ -551,3 +552,115 @@ def test_evaluate_is_annotated_as_the_plan_states():
 def test_blocked_pairs_is_annotated_as_the_plan_states():
     hints = typing.get_type_hints(blocked_pairs)
     assert hints["return"] == set[tuple[str, str]]
+
+
+# --- W7: a removal that leaves days uncovered. -----------------------------
+#
+# Observed live in QA: a campaign running Aug 28 -> Sep 03 was replaced by one
+# running Sep 01 -> Sep 10. Composition was right, W6 was right to stay silent
+# (nothing survived past the new campaign), and yet four days lost their
+# promotion with no warning at all.
+
+
+def message_of(findings, rule):
+    return [f.message for f in findings if f.rule == rule][0]
+
+
+def test_w7_fires_when_a_removal_leaves_days_before_the_new_campaign():
+    live = entry(9.99, start="2026-08-28T00:00:00Z", end="2026-09-03T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start="2026-09-01T00:00:00", end="2026-09-10T00:00:00")]
+    fired = rules_fired(run(rows, reads))
+    assert "W7" in fired
+    # The whole point: W6 is correctly silent here, so W7 is the only voice.
+    assert "W6" not in fired
+
+
+def test_w7_message_names_the_uncovered_dates_and_the_normal_price():
+    live = entry(9.99, start="2026-08-28T00:00:00Z", end="2026-09-03T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start="2026-09-01T00:00:00", end="2026-09-10T00:00:00")]
+    message = message_of(run(rows, reads), "W7")
+    assert "2026-08-28" in message
+    assert "2026-09-01" in message
+    assert "$12.99" in message
+
+
+def test_w7_does_not_fire_when_the_csv_starts_before_the_dropped_entry():
+    live = entry(9.99, start="2026-09-05T00:00:00Z", end="2026-09-20T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start="2026-09-01T00:00:00", end="2026-09-30T00:00:00")]
+    assert "W7" not in rules_fired(run(rows, reads))
+
+
+def test_w7_does_not_fire_for_an_already_expired_entry():
+    dead = entry(9.99, start="2026-04-01T00:00:00Z", end="2026-05-01T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[dead]))}
+    rows = [row(start="2026-09-01T00:00:00", end="2026-09-10T00:00:00")]
+    assert "W7" not in rules_fired(run(rows, reads))
+
+
+def test_w7_does_not_fire_when_the_uncovered_days_are_all_in_the_past():
+    # The CSV starts before now, so every day the dropped entry covered and
+    # the CSV does not is already gone. Nobody can be surprised by yesterday.
+    live = entry(9.99, start="2026-08-01T00:00:00Z", end="2026-09-20T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start="2026-08-20T00:00:00", end="2026-09-18T00:00:00")]
+    assert "W7" not in rules_fired(run(rows, reads))
+
+
+def test_w7_measures_a_straddling_gap_from_now_not_from_the_entry_start():
+    live = entry(9.99, start="2026-08-14T00:00:00Z", end="2026-09-20T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start="2026-09-01T00:00:00", end="2026-09-10T00:00:00")]
+    message = message_of(run(rows, reads), "W7")
+    assert "2026-08-26" in message          # NOW
+    assert "2026-08-14" not in message      # the entry's own start
+    assert "2026-09-01" in message
+
+
+def test_w7_does_not_fire_when_a_csv_row_has_a_blank_start():
+    # A blank start is written unbounded, so it covers everything before it.
+    live = entry(9.99, start="2026-08-14T00:00:00Z", end="2026-09-20T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start=None, end="2026-09-18T00:00:00")]
+    assert "W7" not in rules_fired(run(rows, reads))
+
+
+def test_w7_and_w6_both_fire_when_the_dropped_entry_brackets_the_new_one():
+    live = entry(9.99, start="2026-08-14T00:00:00Z", end="2026-10-03T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start="2026-09-01T00:00:00", end="2026-09-10T00:00:00")]
+    findings = run(rows, reads)
+    assert {"W6", "W7"} <= rules_fired(findings)
+    assert len([f for f in findings if f.rule in ("W6", "W7")]) == 2
+
+
+def test_w7_is_reported_once_for_one_dropped_entry_across_two_csv_rows():
+    rows = [row(start="2026-09-01T00:00:00", end="2026-09-10T00:00:00", line=2),
+            row(promo=6.99, start="2026-09-11T00:00:00",
+                end="2026-09-20T00:00:00", line=3)]
+    live = entry(9.99, start="2026-08-28T00:00:00Z", end="2026-09-05T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    assert len([f for f in run(rows, reads) if f.rule == "W7"]) == 1
+
+
+def test_w7_severity_is_a_warning():
+    assert SEVERITY["W7"] == "warning"
+    live = entry(9.99, start="2026-08-28T00:00:00Z", end="2026-09-03T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start="2026-09-01T00:00:00", end="2026-09-10T00:00:00")]
+    findings = run(rows, reads)
+    assert [f.severity for f in findings if f.rule == "W7"] == ["warning"]
+    assert blocked_pairs(findings) == set()
+
+
+def test_w7_does_not_fire_when_a_csv_row_has_a_start_but_no_end():
+    # `row_to_entry` emits a dateRange only when BOTH bounds exist, so this
+    # row is written fully open and covers everything before it too. Reading
+    # the raw start here instead of the collapsed window would invent a gap
+    # that the written entry does not actually leave.
+    live = entry(9.99, start="2026-08-14T00:00:00Z", end="2026-09-20T00:00:00Z")
+    reads = {("111", "acct_one"): (200, payload(base=12.99, fixed=[live]))}
+    rows = [row(start="2026-09-01T00:00:00", end=None)]
+    assert "W7" not in rules_fired(run(rows, reads))
