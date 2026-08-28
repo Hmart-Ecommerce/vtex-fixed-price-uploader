@@ -508,7 +508,8 @@ def run_interactive(config, ui, folder=None):
     def start_run():
         from vtex_fixed_price_uploader.reader import save_snapshot
         from vtex_fixed_price_uploader.report import (
-            download_link_html, findings_csv, render_html, scope_sentence)
+            ack_label_html, download_link_html, findings_csv, render_html,
+            scope_sentence)
         from vtex_fixed_price_uploader.runner import preflight
 
         if not ui["upload"].value:
@@ -550,11 +551,21 @@ def run_interactive(config, ui, folder=None):
 
         state = AckState(pre.model)
         groups = pre.model.warnings + pre.model.ending
-        boxes = []
+        boxes, ack_rows = [], []
         for group in groups:
-            box = widgets.Checkbox(value=False, indent=False,
-                                   description="{} - {}".format(
-                                       group.product, group.message[:70]))
+            # The checkbox carries no description of its own: a widget
+            # description is truncated to its width, which is what hid the end
+            # of every sentence. The text lives in an HTML label beside it,
+            # where it wraps instead.
+            box = widgets.Checkbox(
+                value=False, indent=False,
+                layout=widgets.Layout(width="28px", flex="0 0 auto",
+                                      margin="0"))
+            label = widgets.HTML(value=ack_label_html(group))
+            ack_rows.append(widgets.HBox(
+                [box, label],
+                layout=widgets.Layout(align_items="flex-start",
+                                      margin="0 0 8px 0")))
             boxes.append(box)
 
         typed = widgets.Text(description="Confirm:", placeholder=str(
@@ -606,7 +617,7 @@ def run_interactive(config, ui, folder=None):
         go.on_click(on_go)
         recheck.on_click(on_recheck)
 
-        controls = list(boxes)
+        controls = list(ack_rows)
         if pre.model.needs_typed_confirmation:
             controls.append(typed)
         controls.extend([scope, go, why, recheck])
