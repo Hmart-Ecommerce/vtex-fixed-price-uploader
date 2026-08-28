@@ -1,4 +1,5 @@
 import io
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -51,7 +52,84 @@ def test_preflight_write_pairs_exclude_blocked_rows():
 
 def test_preflight_hashes_are_populated():
     pre = run_preflight()
-    assert len(pre.csv_hash) == 64 and len(pre.snapshot_hash) == 64
+    assert len(pre.csv_hash) == 64
+    assert len(pre.payload_snapshot_hash) == 64
+    assert len(pre.resume_pairs_hash) == 64
+
+
+def test_resume_identity_survives_payloads_changed_by_the_first_session(tmp_path):
+    before = run_preflight()
+
+    def changed_fetch(account, sku, token, timeout=30, retries=2):
+        return 200, {"basePrice": 8.99,
+                     "fixedPrices": [{"tradePolicyId": "1", "value": 7.99}]}
+
+    after = run_preflight(fetch=changed_fetch)
+    assert before.payload_snapshot_hash != after.payload_snapshot_hash
+    assert before.resume_pairs_hash == after.resume_pairs_hash
+
+    path = str(tmp_path / "w.jsonl")
+    first_session = WriteLog(path)
+    first_session.begin(2, before.csv_hash, before.resume_pairs_hash)
+    first_session.append("111", "acct_one", 200, 1)
+    calls = []
+
+    result = apply(
+        CFG, after, "tok", WriteLog(path), fetch=ok_fetch,
+        post=lambda config, account, sku, payload, token, **kw:
+            calls.append((sku, account)) or (200, ""))
+
+    assert result.skipped == 1
+    assert calls == [("111", "acct_two")]
+
+
+def test_apply_explains_and_explicitly_discards_an_unresumable_log(tmp_path):
+    pre = run_preflight()
+    path = str(tmp_path / "w.jsonl")
+    log = WriteLog(path)
+    log.begin(2, pre.csv_hash, pre.resume_pairs_hash)
+    log.append("111", "acct_one", 200, 1)
+    changed = replace(pre, csv_hash="different-csv")
+    calls = []
+
+    blocked = apply(
+        CFG, changed, "tok", WriteLog(path), fetch=ok_fetch,
+        post=lambda *args, **kwargs: calls.append(1) or (200, ""))
+
+    assert "Resume is not possible" in blocked.halted
+    assert "1 row" in blocked.halted
+    assert "stay written" in blocked.halted
+    assert "abandon_unfinished=True" in blocked.halted
+    assert WriteLog(path).unfinished() is not None
+    assert calls == []
+
+    abandoned = apply(
+        CFG, changed, "tok", WriteLog(path), fetch=ok_fetch,
+        post=lambda *args, **kwargs: calls.append(1) or (200, ""),
+        abandon_unfinished=True)
+
+    assert "Abandoned" in abandoned.halted
+    assert "1 row" in abandoned.halted
+    assert "stay written" in abandoned.halted
+    assert WriteLog(path).unfinished() is None
+    assert calls == []
+
+
+def test_abandonment_does_not_require_a_still_valid_credential(tmp_path):
+    pre = run_preflight()
+    path = str(tmp_path / "w.jsonl")
+    log = WriteLog(path)
+    log.begin(2, pre.csv_hash, pre.resume_pairs_hash)
+    log.append("111", "acct_one", 200, 1)
+
+    result = apply(
+        CFG, pre, "expired", WriteLog(path), abandon_unfinished=True,
+        fetch=lambda account, sku, token, **kwargs: (401, None),
+        post=lambda *args, **kwargs: pytest.fail("discard must not write"))
+
+    assert "Abandoned" in result.halted
+    assert "1 row" in result.halted
+    assert WriteLog(path).unfinished() is None
 
 
 def test_preflight_reports_progress():
@@ -119,7 +197,7 @@ def test_apply_skips_pairs_already_in_the_log(tmp_path):
     pre = run_preflight()
     path = str(tmp_path / "w.jsonl")
     log = WriteLog(path)
-    log.begin(2, pre.csv_hash, pre.snapshot_hash)
+    log.begin(2, pre.csv_hash, pre.resume_pairs_hash)
     log.append("111", "acct_one", 200, 1)
 
     calls = []
@@ -227,3 +305,28 @@ def test_apply_proceeds_when_the_recheck_passes(tmp_path):
     result = apply(CFG, pre, "tok", log, post=lambda *a, **k: (200, ""),
                    fetch=ok_fetch)
     assert result.written == 2
+
+
+def test_apply_rechecks_headroom_fresh_for_only_remaining_writes(
+        tmp_path, monkeypatch):
+    import vtex_fixed_price_uploader.runner as runner_module
+
+    pre = run_preflight()
+    path = str(tmp_path / "w.jsonl")
+    log = WriteLog(path)
+    log.begin(2, pre.csv_hash, pre.resume_pairs_hash)
+    log.append("111", "acct_one", 200, 1)
+    seen = []
+
+    monkeypatch.setattr(
+        runner_module, "check_headroom",
+        lambda token, read_pairs, write_rows, now:
+            seen.append((token, read_pairs, write_rows, now)) or float("inf"))
+
+    apply(CFG, pre, "tok", WriteLog(path), fetch=ok_fetch,
+          post=lambda *args, **kwargs: (200, ""))
+
+    apply_calls = [call for call in seen if call[1] == 0]
+    assert len(apply_calls) == 1
+    assert apply_calls[0][:3] == ("tok", 0, 1)
+    assert apply_calls[0][3] > pre.now

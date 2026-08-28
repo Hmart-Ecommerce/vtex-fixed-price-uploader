@@ -16,7 +16,6 @@ next record fuse into one unparseable line and the next row - already written
 to production - vanishes from the log.
 """
 
-import hashlib
 import json
 import os
 import uuid
@@ -34,13 +33,6 @@ class NoOpenRun(Exception):
 
 class InputsChanged(Exception):
     """The open run used different inputs, or its header is unreadable."""
-
-
-def sha256_of(obj) -> str:
-    """A stable digest of any JSON-serialisable value."""
-    blob = json.dumps(obj, sort_keys=True, separators=(",", ":"),
-                      default=str).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()
 
 
 def _now() -> str:
@@ -123,7 +115,7 @@ class WriteLog:
         return self._open_run(self._records())
 
     def begin(self, expected_rows: int, csv_hash: str,
-              snapshot_hash: str) -> str:
+              resume_pairs_hash: str) -> str:
         if self.unfinished() is not None:
             raise UnfinishedRun(
                 "A previous upload did not finish. Resume it or discard it "
@@ -132,12 +124,13 @@ class WriteLog:
         self._append_record({
             "kind": "start", "run_id": run_id, "at": self._now(),
             "expected_rows": expected_rows,
-            "csv_sha256": csv_hash, "snapshot_sha256": snapshot_hash,
+            "csv_sha256": csv_hash,
+            "resume_pairs_sha256": resume_pairs_hash,
         })
         self._run_open = True
         return run_id
 
-    def resume(self, csv_hash: str, snapshot_hash: str) -> str:
+    def resume(self, csv_hash: str, resume_pairs_hash: str) -> str:
         records = self._records()
         pending = self._open_run(records)
         if pending is None:
@@ -151,10 +144,11 @@ class WriteLog:
             raise InputsChanged(
                 "The unfinished upload used a different file. Discard it and "
                 "start again, or upload the original file.")
-        if pending.get("snapshot_sha256") != snapshot_hash:
+        if pending.get("resume_pairs_sha256") != resume_pairs_hash:
             raise InputsChanged(
-                "Prices in VTEX changed since the unfinished upload started. "
-                "Discard it and start again.")
+                "The set of SKU/account pairs differs from the unfinished "
+                "upload. Discard it and start again, or upload the original "
+                "file.")
         self._run_open = True
         return pending["run_id"]
 

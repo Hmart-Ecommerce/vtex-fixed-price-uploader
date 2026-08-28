@@ -23,6 +23,7 @@ UNKNOWN, which is not the same as "unchanged" and must never be treated as a
 clean baseline.
 """
 
+import hashlib
 import json
 import logging
 import threading
@@ -31,7 +32,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from vtex_fixed_price_uploader.pricing import (
     NETWORK_FAILURE_STATUS, fetch_prices)
-from vtex_fixed_price_uploader.writelog import sha256_of
 
 UNAUTHORIZED_STATUS = 401
 
@@ -49,6 +49,13 @@ TRANSPORT_FAILURES = (
 # a snapshot is the record the writer and `writelog.resume` trust, and a
 # quarter of the matrix missing makes every comparison drawn from it a guess.
 MAX_FAILED_READ_FRACTION = 0.25
+
+
+def sha256_of(obj) -> str:
+    """A stable digest of any JSON-serialisable value."""
+    blob = json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      default=str).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
 
 
 class UnhealthySnapshot(Exception):
@@ -205,8 +212,20 @@ def _serialisable(reads):
     return out
 
 
-def snapshot_hash(reads):
+def payload_snapshot_hash(reads):
+    """Diagnostic digest of the full read matrix, including payload values."""
     return sha256_of(_serialisable(reads))
+
+
+def resume_pairs_hash(reads):
+    """Resume-safe digest of the sorted set of pairs that were read."""
+    pairs = sorted({(str(sku), str(account)) for sku, account in reads})
+    return sha256_of(pairs)
+
+
+# Compatibility for callers that use the original diagnostic hash name. It is
+# intentionally not used by the resume guard.
+snapshot_hash = payload_snapshot_hash
 
 
 def save_snapshot(reads, path) -> dict[int, int]:

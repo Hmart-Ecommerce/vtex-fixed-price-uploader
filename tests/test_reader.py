@@ -4,15 +4,23 @@ import os
 
 import pytest
 
+import vtex_fixed_price_uploader.reader as reader_module
 from vtex_fixed_price_uploader.config import load_config
 from vtex_fixed_price_uploader.pricing import NETWORK_FAILURE_STATUS
 from vtex_fixed_price_uploader.reader import (
     MAX_FAILED_READ_FRACTION, AuthenticationError, UnhealthySnapshot,
     is_failed_read, load_snapshot, read_all, save_snapshot, snapshot_hash,
-    status_counts)
+    sha256_of, status_counts)
 
 CFG = load_config({"accounts": {"R1": "acct_one", "R2": "acct_two"},
                    "never_write": ["acct_master"], "trade_policy": "1"})
+
+
+def test_hash_helper_is_owned_by_the_read_layer_not_the_write_log():
+    import vtex_fixed_price_uploader.runner as runner_module
+
+    assert sha256_of.__module__ == "vtex_fixed_price_uploader.reader"
+    assert runner_module.sha256_of is sha256_of
 
 
 def fake_fetch(account, sku, token, timeout=30, retries=2):
@@ -86,6 +94,18 @@ def test_snapshot_hash_changes_with_content():
     b = dict(a)
     b[("111", "acct_one")] = (200, {"basePrice": 1.00, "fixedPrices": []})
     assert snapshot_hash(a) != snapshot_hash(b)
+
+
+def test_resume_pairs_hash_ignores_payload_changes_but_payload_hash_does_not():
+    before = {("111", "acct_one"): (200, {"fixedPrices": []}),
+              ("222", "acct_one"): (404, None)}
+    after = {("111", "acct_one"): (200, {"fixedPrices": [{"value": 7.99}]}),
+             ("222", "acct_one"): (200, {"fixedPrices": []})}
+
+    assert (reader_module.payload_snapshot_hash(before)
+            != reader_module.payload_snapshot_hash(after))
+    assert (reader_module.resume_pairs_hash(before)
+            == reader_module.resume_pairs_hash(after))
 
 
 def test_a_transport_failure_becomes_the_network_sentinel():

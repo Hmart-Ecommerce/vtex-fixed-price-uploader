@@ -9,10 +9,11 @@ from vtex_fixed_price_uploader.compose import compose
 from vtex_fixed_price_uploader.names import fetch_names
 from vtex_fixed_price_uploader.parser import parse_csv
 from vtex_fixed_price_uploader.pricing import fetch_prices
-from vtex_fixed_price_uploader.reader import read_all, snapshot_hash
+from vtex_fixed_price_uploader.reader import (
+    payload_snapshot_hash, read_all, resume_pairs_hash, sha256_of)
 from vtex_fixed_price_uploader.report import build_model
 from vtex_fixed_price_uploader.rules import blocked_pairs, evaluate
-from vtex_fixed_price_uploader.writelog import sha256_of
+from vtex_fixed_price_uploader.writelog import InputsChanged
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,8 @@ class Preflight:
     write_pairs: frozenset = frozenset()
     names: dict = field(default_factory=dict)
     csv_hash: str = ""
-    snapshot_hash: str = ""
+    payload_snapshot_hash: str = ""
+    resume_pairs_hash: str = ""
     now: datetime = None
 
 
@@ -109,30 +111,60 @@ def preflight(config, source, token, now=None, progress=None, fetch=None,
     return Preflight(
         rows=rows, reads=reads, compositions=compositions, findings=findings,
         model=model, write_pairs=write_pairs, names=names, csv_hash=csv_hash,
-        snapshot_hash=snapshot_hash(reads), now=now)
+        payload_snapshot_hash=payload_snapshot_hash(reads),
+        resume_pairs_hash=resume_pairs_hash(reads), now=now)
 
 
-def apply(config, pre, token, log, progress=None, post=None, fetch=None):
+def apply(config, pre, token, log, progress=None, post=None, fetch=None,
+          abandon_unfinished=False):
     """Write every eligible pair, halting the whole run on 401 or 403.
 
     The credential is re-probed before the log opens so a login that expired
     during preflight cannot allow any write to begin.
     """
     post = post or writer_module.post_fixed
+    pending = log.unfinished()
+    if pending is not None and abandon_unfinished:
+        already_written = len(log.done_pairs())
+        rows = "row" if already_written == 1 else "rows"
+        log.discard()
+        return ApplyResult(halted=(
+            "Abandoned the unfinished upload log. {} {} already written "
+            "stay written in VTEX. Run Apply again to start a new "
+            "upload.".format(already_written, rows)))
+
     try:
         check_credential(config, token, fetch=fetch)
     except CredentialRejected as exc:
         return ApplyResult(halted=str(exc))
 
-    if log.unfinished() is None:
-        log.begin(len(pre.write_pairs), pre.csv_hash, pre.snapshot_hash)
+    if pending is None:
+        already = set()
     else:
+        already = log.done_pairs()
+        already_written = len(already)
+        rows = "row" if already_written == 1 else "rows"
         # A newly constructed WriteLog has no in-memory open-run state. Resume
         # validates both input hashes and enables append for this instance.
-        log.resume(pre.csv_hash, pre.snapshot_hash)
+        try:
+            log.resume(pre.csv_hash, pre.resume_pairs_hash)
+        except InputsChanged as exc:
+            return ApplyResult(halted=(
+                "Resume is not possible: {} Abandoning means {} {} already "
+                "written stay written in VTEX. To abandon this log, run "
+                "Apply with abandon_unfinished=True.".format(
+                    exc, already_written, rows)))
 
-    already = log.done_pairs()
     targets = sorted(pre.write_pairs)
+    remaining_writes = sum(
+        1 for sku, account in targets
+        if (str(sku), account) not in already)
+    check_headroom(
+        token, 0, remaining_writes, datetime.now(timezone.utc))
+
+    if pending is None:
+        log.begin(len(pre.write_pairs), pre.csv_hash, pre.resume_pairs_hash)
+
     written = failed = skipped = 0
     halted = ""
 

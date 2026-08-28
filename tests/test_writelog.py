@@ -5,15 +5,7 @@ import stat
 import pytest
 
 from vtex_fixed_price_uploader.writelog import (
-    InputsChanged, NoOpenRun, UnfinishedRun, WriteLog, sha256_of)
-
-
-def test_sha256_is_stable_across_key_order():
-    assert sha256_of({"a": 1, "b": 2}) == sha256_of({"b": 2, "a": 1})
-
-
-def test_sha256_differs_on_content():
-    assert sha256_of({"a": 1}) != sha256_of({"a": 2})
+    InputsChanged, NoOpenRun, UnfinishedRun, WriteLog)
 
 
 def test_begin_writes_a_start_record(tmp_path):
@@ -220,7 +212,6 @@ def test_the_public_interface_is_annotated():
     assert WriteLog.resume.__annotations__["return"] is str
     assert WriteLog.unfinished.__annotations__["return"] == (dict | None)
     assert WriteLog.done_pairs.__annotations__["return"] == set[tuple[str, str]]
-    assert sha256_of.__annotations__["return"] is str
 
 
 def test_nothing_to_resume_is_a_different_type_from_a_run_still_open():
