@@ -267,30 +267,44 @@ def verify_only(config, pre, token, say, verify_fn=None):
     return check
 
 
+def _pairs(count):
+    """"1 pair" or "18 pairs" - the undo's counts are read, not parsed."""
+    return "{:,} pair{}".format(count, "" if count == 1 else "s")
+
+
 def _restorable(snapshot, pair):
-    """The prior policy-1 array for a pair, or None - restore's own rule."""
+    """The prior policy-1 array for a pair, or None - restore's own rule.
+
+    Mirrors `restore` exactly, including the distinction that matters: an
+    empty list is a real answer ("this sku had no fixed price") and None is
+    the absence of one. Returning `policy1(data) or None` collapsed those two,
+    which is how the preview came to under-count what an undo would put back.
+    """
     from vtex_fixed_price_uploader.pricing import policy1
-    from vtex_fixed_price_uploader.reader import is_failed_read
 
     record = (snapshot or {}).get(pair)
     if not record:
         return None
     status, data = record
-    if is_failed_read(status) or data is None:
+    if status != 200 or data is None:
         return None
-    return policy1(data) or None
+    return policy1(data)
 
 
 def restore_preview(pairs, snapshot):
     """What an undo would put back, and for how many pairs - before it runs."""
-    usable = sum(1 for pair in pairs if _restorable(snapshot, pair))
+    usable = sum(1 for pair in pairs
+                 if _restorable(snapshot, pair) is not None)
     total = len(pairs)
     missing = total - usable
-    sentence = ("This will put back the prices that were in VTEX before the "
-                "last upload, for {:,} of {:,} pairs.".format(usable, total))
+    sentence = ("This will put back what was in VTEX before the last upload, "
+                "for {:,} of {:,} pairs. For some of them that may mean "
+                "removing a price the upload added, because there was no "
+                "fixed price there before.".format(usable, total))
     if missing:
-        sentence += (" {:,} pairs have no usable saved copy and will be left "
-                     "exactly as they are.".format(missing))
+        sentence += (" {:,} pairs have no usable saved copy. They will be left "
+                     "exactly as they are, still holding the prices the upload "
+                     "wrote.".format(missing))
     return sentence + " Nothing is written until you confirm."
 
 
@@ -303,15 +317,24 @@ def run_restore(config, snapshot, pairs, token, log, say, progress=None,
     result = restore_fn(config, snapshot, pairs, token, log, progress=progress)
     if result.halted:
         say(_as_sentence(result.halted))
-    say("Put back {:,} price{}.".format(
-        result.restored, "" if result.restored == 1 else "s"))
+    say("Put back the previous state for {}.".format(_pairs(result.restored)))
     if result.failed:
-        say("{:,} pairs could not be put back and are still holding the new "
-            "prices. Run the undo again.".format(result.failed))
-    left = len(pairs) - result.restored - result.failed
-    if left > 0:
-        say("{:,} pairs were left exactly as they are, because the saved copy "
-            "could not answer for them.".format(left))
+        say("{} could not be put back and are still holding the new prices. "
+            "Run the undo again.".format(_pairs(result.failed)))
+    # Every sentence below says what the pair means for production, not only
+    # how it was counted. "restored 0, skipped 18" read as "the undo did
+    # nothing"; the 18 new prices were in fact all still live.
+    if result.skipped:
+        say("{} skipped - nothing was put back there, and the prices the "
+            "upload wrote are still live in VTEX. The saved copy could not "
+            "say what was there before, so changing anything would have been "
+            "a guess. Put those right by hand or from a good snapshot."
+            .format(_pairs(result.skipped)))
+    unreached = (len(pairs) - result.restored - result.failed
+                 - result.skipped)
+    if unreached > 0:
+        say("{} not reached because the undo stopped early - still holding "
+            "the prices the upload wrote.".format(_pairs(unreached)))
     return result
 
 

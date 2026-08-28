@@ -55,20 +55,81 @@ def test_restore_keeps_expired_entries(tmp_path):
     assert any("dateRange" in e for e in seen["payload"])
 
 
-def test_restore_of_an_empty_prior_array_writes_nothing(tmp_path):
-    """An empty policy-1 array is not restorable through this endpoint.
+def test_restore_of_a_prior_empty_array_posts_an_empty_array(tmp_path):
+    """"The sku had no fixed price" is a prior state, and the commonest one.
 
-    The write replaces the whole array, so posting [] would clear every fixed
-    price on the sku - a destructive write, not an undo. `writer._check_payload`
-    refuses it outright, so restore must recognise the case and skip the pair
-    rather than hand writer a payload it will reject.
+    A successful read showing an empty policy-1 array is knowledge, not
+    absence of knowledge. The only way to express it through this endpoint is
+    to post [], so restore opts in to the writer's empty-payload waiver here.
+    Skipping instead - which is what shipped - made rollback incapable of
+    undoing the first price ever put on a sku: 18 of 18 pairs were left live.
     """
+    snapshot = {("111", "acct_one"): (200, {"basePrice": 8.99,
+                                            "fixedPrices": []})}
+    seen = []
+    log = WriteLog(str(tmp_path / "r.jsonl"))
+
+    def fake_post(config, account, sku, payload, token, **kw):
+        seen.append((payload, kw))
+        return 200, ""
+
+    result = restore(CFG, snapshot, [("111", "acct_one")], "tok", log,
+                     post=fake_post)
+    assert [payload for payload, _kw in seen] == [[]]
+    assert seen[0][1].get("allow_empty") is True
+    assert result.restored == 1
+    assert result.failed == 0 and result.skipped == 0
+
+
+def test_restore_of_a_prior_empty_array_survives_the_real_writer(tmp_path,
+                                                                 monkeypatch):
+    """The waiver restore passes must be the one the real writer accepts.
+
+    The injected fakes above would stay green against a writer that still
+    refused []. This closes that gap by driving the actual `post_fixed`.
+    """
+    from vtex_fixed_price_uploader import writer as writer_module
+
+    class FakeResponse:
+        status = 200
+        def read(self):
+            return b""
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["body"] = req.data.decode()
+        return FakeResponse()
+
+    monkeypatch.setattr(writer_module.urllib.request, "urlopen", fake_urlopen)
     snapshot = {("111", "acct_one"): (200, {"fixedPrices": []})}
-    calls = []
     log = WriteLog(str(tmp_path / "r.jsonl"))
     result = restore(CFG, snapshot, [("111", "acct_one")], "tok", log,
+                     post=writer_module.post_fixed)
+    assert seen["body"] == "[]"
+    assert result.restored == 1
+
+
+def test_restore_skips_a_pair_the_snapshot_recorded_as_404(tmp_path):
+    """404 is a successful read, but not one that says the array was empty.
+
+    A 404 says the pricing record was not found, which is not the same claim
+    as "policy 1 held no entries". Posting [] on it would be a guess, and a
+    guess here clears the sku.
+    """
+    calls = []
+    log = WriteLog(str(tmp_path / "r.jsonl"))
+    snapshot = {("111", "acct_one"): (404, None),
+                ("222", "acct_one"): (404, {"fixedPrices": []})}
+    result = restore(CFG, snapshot,
+                     [("111", "acct_one"), ("222", "acct_one")], "tok", log,
                      post=lambda *a, **k: calls.append(1) or (200, ""))
-    assert calls == [] and result.restored == 0 and result.failed == 0
+    assert calls == []
+    assert result.restored == 0 and result.failed == 0 and result.skipped == 2
 
 
 def test_restore_skips_a_pair_absent_from_the_snapshot(tmp_path):
@@ -76,7 +137,7 @@ def test_restore_skips_a_pair_absent_from_the_snapshot(tmp_path):
     log = WriteLog(str(tmp_path / "r.jsonl"))
     result = restore(CFG, SNAPSHOT, [("999", "acct_one")], "tok", log,
                      post=lambda *a, **k: calls.append(1) or (200, ""))
-    assert calls == [] and result.restored == 0
+    assert calls == [] and result.restored == 0 and result.skipped == 1
 
 
 def test_restore_skips_a_pair_whose_snapshot_read_failed(tmp_path):
@@ -84,12 +145,14 @@ def test_restore_skips_a_pair_whose_snapshot_read_failed(tmp_path):
     calls = []
     log = WriteLog(str(tmp_path / "r.jsonl"))
     snapshot = {("111", "acct_one"): (429, None), ("222", "acct_one"): (0, None),
-                ("333", "acct_one"): (404, None)}
+                ("333", "acct_one"): (404, None),
+                ("444", "acct_one"): (500, {"fixedPrices": []})}
     result = restore(CFG, snapshot,
                      [("111", "acct_one"), ("222", "acct_one"),
-                      ("333", "acct_one")], "tok", log,
+                      ("333", "acct_one"), ("444", "acct_one")], "tok", log,
                      post=lambda *a, **k: calls.append(1) or (200, ""))
     assert calls == [] and result.restored == 0 and result.failed == 0
+    assert result.skipped == 4
 
 
 def test_restore_halts_on_401(tmp_path):

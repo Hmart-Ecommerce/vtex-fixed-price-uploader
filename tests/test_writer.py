@@ -60,6 +60,94 @@ def test_an_empty_array_is_refused(monkeypatch):
         writer.post_fixed(CFG, "acct_one", "111", [], "tok")
 
 
+def test_an_empty_array_is_allowed_only_when_the_caller_opts_in(monkeypatch):
+    """Restore, and only restore, may say "this sku had no fixed price".
+
+    An empty array replaces the policy-1 array with nothing. On the apply path
+    that can only ever be an upstream bug, so the default stays a refusal. On
+    the restore path it is the one and only way to express a prior state of
+    "no fixed price at all", which is the commonest thing an undo has to put
+    back - the first price ever placed on a sku.
+    """
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["body"] = json.loads(req.data.decode())
+        return FakeResponse()
+
+    monkeypatch.setattr(writer.urllib.request, "urlopen", fake_urlopen)
+    status, err = writer.post_fixed(CFG, "acct_one", "111", [], "tok",
+                                    allow_empty=True)
+    assert status == 200 and err == ""
+    assert seen["body"] == []
+
+
+def test_opting_in_to_an_empty_array_relaxes_nothing_else(monkeypatch):
+    """`allow_empty` waives emptiness only, never the shape of the payload."""
+    monkeypatch.setattr(writer.urllib.request, "urlopen", explode)
+    for payload in (None, "wipe", {"value": 1.0}, [None]):
+        with pytest.raises(ValueError, match="payload"):
+            writer.post_fixed(CFG, "acct_one", "111", payload, "tok",
+                              allow_empty=True)
+
+
+def test_the_apply_path_has_no_way_to_opt_in_to_an_empty_array():
+    """The opt-in exists for restore; `apply` must never reach it.
+
+    Two halves, because either alone would let the defect back in: `apply`
+    refuses an empty composition before it calls the writer at all, and the
+    call it does make carries no keyword that would waive the writer's own
+    guard.
+
+    Lives here rather than in test_runner.py because it is a property of this
+    module's opt-in - the apply-side call site is only the other end of it.
+    """
+    import io
+    from dataclasses import replace
+    from datetime import datetime, timezone
+
+    from vtex_fixed_price_uploader.runner import apply, preflight
+    from vtex_fixed_price_uploader.writelog import WriteLog
+
+    now = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+    header = ("skuId,listPriceR1,promoPriceR1,dateStartR1,dateEndR1,"
+              "promo_type\n")
+    row = "111,8.99,7.99,2026-08-28T1:00:00-03:00,2026-09-18T1:00:00-03:00,w\n"
+
+    def fetch(account, sku, token, timeout=30, retries=2):
+        return 200, {"basePrice": 8.99, "fixedPrices": []}
+
+    pre = preflight(CFG, io.StringIO(header + row), "tok", now=now,
+                    fetch=fetch, name_fetch=lambda url, timeout=30: [])
+
+    seen = []
+
+    def record(config, account, sku, payload, token, **kw):
+        seen.append(kw)
+        return 200, ""
+
+    log_path = str(tmp_log_dir() / "apply.jsonl")
+    apply(CFG, pre, "tok", WriteLog(log_path), fetch=fetch, post=record)
+    assert seen, "the fixture wrote nothing, so it proves nothing"
+    assert all("allow_empty" not in kw for kw in seen)
+
+    emptied = replace(pre, compositions={
+        pair: replace(comp, new_array=[])
+        for pair, comp in pre.compositions.items()})
+    blocked = []
+    with pytest.raises(ValueError, match="empty"):
+        apply(CFG, emptied, "tok", WriteLog(str(tmp_log_dir() / "b.jsonl")),
+              fetch=fetch,
+              post=lambda *a, **k: blocked.append(1) or (200, ""))
+    assert blocked == []
+
+
+def tmp_log_dir():
+    import pathlib
+    import tempfile
+    return pathlib.Path(tempfile.mkdtemp())
+
+
 @pytest.mark.parametrize("payload", [
     None,
     {"value": 1.0},
@@ -153,21 +241,33 @@ def test_the_account_guard_runs_before_the_url_is_built(monkeypatch):
     assert sequence == ["guard", "url-built"]
 
 
-def test_no_parameter_can_bypass_the_account_guard():
+def test_no_parameter_can_bypass_the_account_guard(monkeypatch):
     """No dry-run, admin or force switch may be added to this signature.
 
     An override flag is the shape a future caller would reach for, and it
     would ship green against every behavioural test here, so the signature
     itself is the thing under test.
+
+    `allow_empty` is the one waiver this signature carries, and it is listed
+    here deliberately rather than tolerated: it waives emptiness for the
+    restore path and nothing else. The second half proves it - a forbidden
+    account is still refused with the flag set, so it is not the beginnings of
+    a force switch.
     """
     signature = inspect.signature(writer.post_fixed)
     assert list(signature.parameters) == [
         "config", "account", "sku", "payload", "token", "timeout", "retries",
+        "allow_empty",
     ]
     assert not any(
         parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
         for parameter in signature.parameters.values()
     )
+
+    monkeypatch.setattr(writer.urllib.request, "urlopen", explode)
+    with pytest.raises(DisallowedAccount):
+        writer.post_fixed(CFG, "acct_master", "111", [], "tok",
+                          allow_empty=True)
 
 
 def test_a_mutated_allowlist_cannot_open_an_unknown_account(monkeypatch):

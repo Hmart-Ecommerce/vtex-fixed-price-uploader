@@ -53,12 +53,12 @@ def _check_sku(sku):
             "refusing {!r}".format(sku))
 
 
-def _check_payload(payload):
+def _check_payload(payload, allow_empty=False):
     if not isinstance(payload, list):
         raise ValueError(
             "payload must be a list of price entries; got {}".format(
                 type(payload).__name__))
-    if not payload:
+    if not payload and not allow_empty:
         raise ValueError(
             "payload must not be empty: this endpoint replaces the whole "
             "policy-1 array, so an empty payload would clear every fixed "
@@ -86,11 +86,21 @@ def _scrub(text, token):
 
 
 def post_fixed(config, account, sku, payload, token, timeout=30,
-               retries=1) -> tuple[int, str]:
+               retries=1, allow_empty=False) -> tuple[int, str]:
     """Replace the policy-1 array. Returns (http_status, error excerpt).
 
     `retries` counts retries, not attempts: the default `retries=1` makes TWO
     attempts, `retries=0` makes one, `retries=3` makes four.
+
+    `allow_empty` exists for one caller: `restore`. An empty array clears every
+    fixed price on the sku, which on the apply path can only ever be an
+    upstream bug - hence the default refusal, and hence `apply` never passing
+    this. But "the sku had no fixed price" is a real prior state, and posting
+    `[]` is the only way to put it back. Restore passes this only for a pair
+    whose snapshot holds a SUCCESSFUL read of an empty policy-1 array; a 404,
+    a failed read, or a pair the snapshot never saw stays skipped, because
+    there `[]` would be a guess, and a guessed write here is a destructive one.
+    Everything else about the payload's shape is checked exactly the same way.
 
     Status 0 means the network failed and the write may or may not have landed -
     a different situation from any HTTP status, and the caller must treat it as
@@ -104,7 +114,7 @@ def post_fixed(config, account, sku, payload, token, timeout=30,
     check_account_allowed(config, account)
     _check_trade_policy(config)
     _check_sku(sku)
-    _check_payload(payload)
+    _check_payload(payload, allow_empty=allow_empty)
 
     url = "{}/{}/pricing/prices/{}/fixed/{}".format(
         PRICING_HOST, account, sku, TRADE_POLICY)

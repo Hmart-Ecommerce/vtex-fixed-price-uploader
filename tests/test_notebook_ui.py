@@ -548,6 +548,64 @@ def test_restore_preview_states_what_goes_back_and_for_how_many_pairs():
     assert "1" in sentence
 
 
+def test_restore_preview_counts_a_prior_of_no_fixed_price_as_restorable():
+    """A 200 read of an empty array is a saved copy, not a missing one.
+
+    The preview must agree with what restore will actually do, or the operator
+    is told two pairs will be put back and then sees three restored.
+    """
+    pairs = [("1", "acct_one"), ("2", "acct_one"), ("3", "acct_two")]
+    snapshot = {("1", "acct_one"): (200, {"fixedPrices": [
+                    {"tradePolicyId": "1", "value": 5}]}),
+                ("2", "acct_one"): (200, {"fixedPrices": []}),
+                ("3", "acct_two"): (404, None)}
+    sentence = ui.restore_preview(pairs, snapshot)
+    assert "2 of 3" in sentence
+
+
+def say_into(collected):
+    return lambda text: collected.append(str(text))
+
+
+def test_run_restore_says_skipped_pairs_are_still_holding_the_new_prices():
+    """The live failure was a report the operator could not act on.
+
+    "restored 0 - skipped 18" reads as "the undo was a no-op". The truth was
+    that all 18 new prices were still live in VTEX. A skipped pair has to say
+    what it means for production, not just that it was counted.
+    """
+    from vtex_fixed_price_uploader.restore import RestoreResult
+
+    pairs = [(str(n), "acct_one") for n in range(18)]
+    said = []
+    ui.run_restore(a_config(), {}, pairs, "tok", object(), say_into(said),
+                   restore_fn=lambda *a, **k: RestoreResult(skipped=18))
+    text = " ".join(said).lower()
+    assert "18" in text
+    assert "still" in text and ("live" in text or "in vtex" in text)
+    assert "upload" in text, "it must name what is still live, not just that"
+    assert "nothing was put back" in text
+
+
+def test_run_restore_reports_pairs_it_never_reached_after_a_halt():
+    """A halt leaves pairs neither restored nor skipped; they still count.
+
+    Subtracting restored and failed used to fold these into the skipped
+    sentence, which told the operator the saved copy was at fault when the
+    real cause was the login dying part-way.
+    """
+    from vtex_fixed_price_uploader.restore import RestoreResult
+
+    pairs = [(str(n), "acct_one") for n in range(10)]
+    said = []
+    ui.run_restore(a_config(), {}, pairs, "tok", object(), say_into(said),
+                   restore_fn=lambda *a, **k: RestoreResult(
+                       restored=3, skipped=1, halted="Your login was rejected."))
+    text = " ".join(said).lower()
+    assert "6" in text
+    assert "not reached" in text or "never reached" in text
+
+
 def test_undo_is_on_the_screen_and_asks_before_writing(monkeypatch, tmp_path):
     screen = open_screen(monkeypatch, tmp_path)
     screen.ui["token"].value = "a-login-value"

@@ -4,11 +4,14 @@ Faithful, not tidy: expired entries are restored too. An undo that also cleans
 up is not an undo - the operator asked for the previous state, and giving them
 a different state leaves them unable to reason about what happened.
 
-The snapshot is the only source of truth for what to put back. Where it holds
-no answer - no entry for the pair, a failed read, or a prior array that was
-empty - there is nothing to restore, and restore skips the pair. None of those
-are a licence to invent a payload: this endpoint replaces the whole policy-1
-array, so a guessed write is a destructive one.
+The snapshot is the only source of truth for what to put back, and the line
+that matters runs between "the snapshot says there was nothing" and "the
+snapshot cannot say". A successful read (200) showing an empty policy-1 array
+is the first: the sku genuinely had no fixed price, and posting [] puts that
+exact state back. No entry for the pair, a 404, or a failed read is the
+second: nothing was learned, so the pair is skipped. This endpoint replaces
+the whole policy-1 array, so posting [] on the second kind would be a guessed
+write, and a guessed write here is a destructive one.
 """
 
 import json
@@ -18,7 +21,6 @@ from dataclasses import dataclass
 from vtex_fixed_price_uploader import writer as writer_module
 from vtex_fixed_price_uploader.config import check_account_allowed
 from vtex_fixed_price_uploader.pricing import policy1
-from vtex_fixed_price_uploader.reader import is_failed_read
 
 # The hashes the restore run records in its log header. Restore has no csv and
 # no snapshot digest of its own, but `WriteLog.resume` matches on both, so they
@@ -32,14 +34,19 @@ _LOG_TAG = "restore"
 class RestoreResult:
     """Counts for one restore pass.
 
-    `restored` and `failed` cover only the pairs actually written. Pairs the
-    snapshot could not answer for are neither, so a caller reporting to an
-    operator should show `len(pairs) - restored - failed` as skipped rather
-    than implying every pair was handled.
+    `restored` and `failed` cover only the pairs actually written. `skipped`
+    counts the pairs the snapshot could not answer for, and it is reported
+    rather than derived: a skipped pair still holds whatever the upload put
+    there, so an operator who is told only "restored 0" reads it as "nothing
+    happened" when the truth is "your new prices are all still live".
+
+    A halted pass reaches neither counter for the pairs after the halt, so
+    `restored + failed + skipped` is less than `len(pairs)` exactly then.
     """
 
     restored: int = 0
     failed: int = 0
+    skipped: int = 0
     halted: str = ""
 
 
@@ -111,28 +118,37 @@ def restore(config, snapshot, pairs, token, log, post=None, progress=None):
         # upload's run.
         log.resume(_LOG_TAG, _LOG_TAG)
 
-    restored = failed = 0
+    restored = failed = skipped = 0
     halted = ""
     total = len(pairs)
 
     for index, (sku, account) in enumerate(pairs, start=1):
         record = snapshot.get((sku, account))
+        # None means "the snapshot cannot answer"; [] means "the snapshot
+        # answered, and the answer was no fixed prices". Only a 200 produces
+        # the second - a 404 is a successful read, but it says the pricing
+        # record was not found, not that policy 1 held no entries, and
+        # `is_failed_read` deliberately lumps the two successes together.
         payload = None
         if record is not None:
             status_read, data = record
-            if not is_failed_read(status_read) and data is not None:
+            if status_read == 200 and data is not None:
                 payload = policy1(data)
 
-        # Nothing the snapshot can answer for: no entry, a failed read, or a
-        # prior array that held no policy-1 entries. The last is not a licence
-        # to post []: that would clear every fixed price on the sku, which is
-        # a destructive write and not the previous state.
-        if not payload:
+        if payload is None:
+            # No entry, a 404, or a failed read. Nothing is put back, and
+            # whatever the upload wrote stays live - which is why the caller
+            # gets this counted rather than left to infer from a subtraction.
+            skipped += 1
             if progress:
                 progress(index, total)
             continue
 
-        status, _detail = post(config, account, str(sku), payload, token)
+        # `allow_empty` is passed on this path and only this path. An empty
+        # payload has been proved from a successful read, so it restores the
+        # prior state instead of guessing at one.
+        status, _detail = post(config, account, str(sku), payload, token,
+                               allow_empty=True)
         log.append(sku, account, status, len(payload))
 
         if status in (401, 403):
@@ -147,4 +163,5 @@ def restore(config, snapshot, pairs, token, log, post=None, progress=None):
 
     if not halted:
         log.finish()
-    return RestoreResult(restored=restored, failed=failed, halted=halted)
+    return RestoreResult(restored=restored, failed=failed, skipped=skipped,
+                         halted=halted)
