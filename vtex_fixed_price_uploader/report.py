@@ -4,10 +4,15 @@ Verdict first, data second. Findings are grouped by (rule, sku) so one issue
 hitting nine regions renders as one line with a region count, which is what
 turns ~74 rows into ~15 readable items.
 
-Rule ids never reach the screen. They belong in the downloadable CSV, where
-someone debugging can find them.
+Rule ids never reach the screen. They belong in the downloadable CSV, which
+the screen offers as a download so that detail is actually reachable.
+
+A group names every region it stands for. Collapsing nine codes into "9
+regions" destroys the one fact the fix instruction asks the operator to act on
+- which region to remove from the file.
 """
 
+import base64
 import csv
 import html
 import io
@@ -47,6 +52,8 @@ class ReportModel:
     info: tuple = ()
     ack_keys: tuple = ()
     needs_typed_confirmation: bool = False
+    total_rows: int = 0
+    account_count: int = 0
 
 
 def _product(sku, names):
@@ -95,22 +102,34 @@ def build_model(findings, compositions, write_pairs, names):
                         if f.severity == "blocking"})
 
     ack_keys = tuple(g.key for g in warnings + ending)
-    typed = (write_rows > TYPED_CONFIRMATION_THRESHOLD
-             or removed > TYPED_CONFIRMATION_THRESHOLD)
+    # The blast radius is what one click does, so the threshold weighs the
+    # writes and the removals together. Judging each figure alone let 369
+    # writes plus 432 removals through with no typed step.
+    typed = (write_rows + removed) > TYPED_CONFIRMATION_THRESHOLD
+
+    # Every pair the file produced: the writable ones plus the blocked ones.
+    # This is the denominator the three headline numbers are read against.
+    total_rows = len(compositions)
+    account_count = len({account for pair in write_pairs
+                         if pair in compositions
+                         for account in (pair[1],)})
 
     return ReportModel(
         write_rows=write_rows, blocked_rows=blocked_rows,
         warning_rows=warning_rows, removed_entries=removed,
         blocking=blocking, warnings=warnings, ending=ending, info=info,
-        ack_keys=ack_keys, needs_typed_confirmation=typed)
+        ack_keys=ack_keys, needs_typed_confirmation=typed,
+        total_rows=total_rows, account_count=account_count)
 
 
 def _regions_label(codes):
-    if not codes:
-        return ""
-    if len(codes) == 1:
-        return codes[0]
-    return "{} regions".format(len(codes))
+    """Name every region in the group, however many there are.
+
+    The fix instruction for these findings is "remove this region from your
+    file", so the codes are the actionable part. A long line is a smaller
+    problem than an unanswerable one.
+    """
+    return ", ".join(codes)
 
 
 def _section_html(title, groups, colour):
@@ -140,20 +159,75 @@ def _section_html(title, groups, colour):
             plural="" if len(groups) == 1 else "s", rows="".join(rows)))
 
 
+def headline(model):
+    """The one-line verdict.
+
+    "Ready to upload" is only true when nothing was excluded. Saying it over
+    171 blocked rows tells the operator the file is fine when it is not.
+    """
+    if not model.write_rows:
+        return "Nothing to upload"
+    if model.blocked_rows:
+        return "Part of this file cannot be uploaded"
+    return "Ready to upload"
+
+
+def scope_sentence(model):
+    """The full blast radius of one click, in one sentence.
+
+    Rows, accounts and removals together. The removal count used to sit in the
+    verdict block far above the button, separated by every rendered item.
+    """
+    prices = "{:,} price{}".format(model.write_rows,
+                                   "" if model.write_rows == 1 else "s")
+    accounts = "{:,} account{}".format(model.account_count,
+                                       "" if model.account_count == 1 else "s")
+    if not model.removed_entries:
+        return ("This will write {} to {}. No existing prices will be "
+                "removed.".format(prices, accounts))
+    return ("This will write {} to {} and remove {:,} existing price{} that "
+            "overlap the new dates.".format(
+                prices, accounts, model.removed_entries,
+                "" if model.removed_entries == 1 else "s"))
+
+
+def download_link_html(text, filename, label=None):
+    """A self-contained download link for a text file.
+
+    The bytes travel in the href, so the link keeps working in a notebook
+    output cell that has no server behind it.
+    """
+    payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return ('<a download="{filename}" href="data:text/csv;base64,{payload}" '
+            'style="font-family:sans-serif;font-size:13px">{label}</a>'.format(
+                filename=html.escape(filename), payload=payload,
+                label=html.escape(label or filename)))
+
+
 def render_html(model):
     """The operator's screen. Static content only - controls are widgets."""
-    headline = "Ready to upload" if model.write_rows else "Nothing to upload"
     parts = [
         '<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;'
         'max-width:820px">',
         '<div style="border:1px solid #d8d8d8;padding:16px 20px">'
         '<div style="font-size:18px;font-weight:600;margin-bottom:10px">'
-        '{}</div>'.format(html.escape(headline)),
+        '{}</div>'.format(html.escape(headline(model))),
         '<div style="font-size:14px;line-height:1.9">'
-        '<strong>{:,}</strong> prices will be written<br>'
-        '<strong>{:,}</strong> rows need your attention<br>'
-        '<strong>{:,}</strong> rows blocked and excluded</div>'.format(
-            model.write_rows, model.warning_rows, model.blocked_rows),
+        '<strong>{total:,}</strong> rows in your file<br>'
+        '<strong>{write:,}</strong> prices will be written<br>'
+        '<strong>{blocked:,}</strong> rows blocked and excluded</div>'.format(
+            total=model.total_rows, write=model.write_rows,
+            blocked=model.blocked_rows),
+        '<div style="font-size:13px;color:#555;margin-top:8px">'
+        '{write:,} written + {blocked:,} blocked = {total:,} rows in the '
+        'file.</div>'.format(write=model.write_rows,
+                             blocked=model.blocked_rows,
+                             total=model.total_rows),
+        '<div style="font-size:13px;color:#555;margin-top:8px">'
+        '<strong>{attention:,}</strong> rows need your attention. This number '
+        'overlaps both numbers above - blocked rows raise warnings too - so '
+        'it is not a third group and does not add to the total.</div>'.format(
+            attention=model.warning_rows),
     ]
     if model.removed_entries:
         parts.append(

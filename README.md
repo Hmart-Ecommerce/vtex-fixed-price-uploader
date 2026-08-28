@@ -46,6 +46,57 @@ them to the package, notebook, or repository.
 6. Read the complete verification summary after the write. Do not treat
    confirmed-empty or unreadable rows as successful writes.
 
-The login value is held only in the password widget for the current session. It
-is not written to the notebook, Drive files, logs, request URLs, or request
-bodies.
+## What the screen shows
+
+The verdict block states the file total and reconciles the three numbers:
+written plus blocked equals the rows in the file. The "rows need your
+attention" count deliberately overlaps both, because blocked rows raise
+warnings too, so it is labelled as an overlap and never added to the total.
+The headline does not claim the file is ready to upload while any row is
+blocked.
+
+Every finding names the regions it stands for, and the full detail - rule ids,
+one line per region - is offered as a CSV download next to the report.
+
+The upload button restates the whole scope where the click happens: how many
+prices, to how many accounts, and how many existing prices will be removed.
+The typed confirmation is required when the writes and removals together
+cross the threshold, not only when either one does on its own.
+
+## After a write
+
+The read-back runs whether the upload finished or stopped part-way. A run that
+halts has usually already written rows, and the read-back is the only evidence
+those rows landed. Rows that failed to write and rows skipped as already
+written are always reported, including when the count is zero.
+
+*Check what landed (no writing)* re-runs the read-back later without touching
+production - use it to settle unreadable rows.
+
+*Put the previous prices back* restores the prices that were in VTEX before the last
+upload. It first states what will be put back and for how many pairs, and
+writes nothing until you confirm. Pairs with no usable saved copy are left
+exactly as they are.
+
+If an earlier run was interrupted and its log is still open, the next upload
+resumes it. Tick *Abandon the unfinished upload log* to start a new one
+instead; rows already written stay written in VTEX.
+
+Failures are shown as a sentence with a next step. No traceback reaches the
+screen.
+
+## Handling the login value
+
+The login is held in a password widget for the session, and this package never
+writes it to a log, a Drive file, a request URL, or a request body.
+
+The package cannot make the same promise about the notebook file. Jupyter and
+Colab can serialise widget state - including the value in the password field -
+into the `.ipynb` metadata, and this notebook lives in Drive, which autosaves.
+
+Treat it as a handling rule:
+
+1. Do not save the notebook while the login field still holds a value.
+2. Clear the field when you finish, then save.
+3. If the notebook was saved with the field filled, treat that login as
+   exposed and get a fresh one.
