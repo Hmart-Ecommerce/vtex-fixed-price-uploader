@@ -6,7 +6,9 @@ the source tree.
 """
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 
 class DisallowedAccount(Exception):
@@ -15,10 +17,14 @@ class DisallowedAccount(Exception):
 
 @dataclass(frozen=True)
 class Config:
-    accounts: dict[str, str]
+    # `accounts` is a read-only view, not a plain dict. `frozen=True` only
+    # stops the field being rebound; without the view, an in-place insert
+    # would re-open the allowlist at runtime and let a write reach an account
+    # that was never configured.
+    accounts: Mapping[str, str]
     never_write: tuple[str, ...]
     trade_policy: str
-    catalog_host: str = None
+    catalog_host: str | None = None
 
 
 def load_config(source):
@@ -61,11 +67,22 @@ def load_config(source):
         raise ValueError(
             "'never_write' must be a list or tuple containing only strings")
 
+    # Same strict style as `accounts` and `never_write`: a wrong TYPE here is
+    # accepted silently by a truthiness test and then dies mid-run, deep in a
+    # worker, with an AttributeError - over a cosmetic product label. An
+    # absent, null, or empty value means "no catalog host" and is fine;
+    # anything that is not a string is a config error, caught at load.
+    catalog_host = raw.get("catalog_host")
+    if catalog_host is not None and not isinstance(catalog_host, str):
+        raise ValueError(
+            "'catalog_host' must be a non-empty string or absent; got "
+            "{}".format(type(catalog_host).__name__))
+
     return Config(
-        accounts=dict(accounts),
+        accounts=MappingProxyType(dict(accounts)),
         never_write=tuple(never_write),
         trade_policy=trade_policy,
-        catalog_host=raw.get("catalog_host") or None,
+        catalog_host=catalog_host or None,
     )
 
 

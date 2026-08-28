@@ -1,4 +1,6 @@
 import json
+from collections.abc import Mapping
+
 import pytest
 from vtex_fixed_price_uploader.config import (
     Config, DisallowedAccount, check_account_allowed, load_config)
@@ -106,8 +108,36 @@ def test_accounts_must_map_string_keys_to_non_empty_string_values(accounts):
 
 
 def test_config_field_annotations_are_precise():
-    assert Config.__annotations__["accounts"] == dict[str, str]
+    assert Config.__annotations__["accounts"] == Mapping[str, str]
     assert Config.__annotations__["never_write"] == tuple[str, ...]
+    assert Config.__annotations__["catalog_host"] == (str | None)
+
+
+def test_the_accounts_allowlist_cannot_be_mutated_after_load():
+    """`frozen=True` stops rebinding the field, not editing the dict inside it.
+
+    An in-place insert would re-open the allowlist at runtime and let a write
+    through to an account that was never configured.
+    """
+    cfg = load_config(RAW)
+    with pytest.raises(TypeError):
+        cfg.accounts["R9"] = "acct_stranger"
+    with pytest.raises(TypeError):
+        del cfg.accounts["R1"]
+    with pytest.raises(AttributeError):
+        cfg.accounts.clear()
+    assert "acct_stranger" not in set(cfg.accounts.values())
+    with pytest.raises(DisallowedAccount):
+        check_account_allowed(cfg, "acct_stranger")
+
+
+def test_mutating_the_source_mapping_does_not_reopen_the_allowlist():
+    raw = {"accounts": {"R1": "acct_one"}, "never_write": [],
+           "trade_policy": "1"}
+    cfg = load_config(raw)
+    raw["accounts"]["R9"] = "acct_stranger"
+    with pytest.raises(DisallowedAccount):
+        check_account_allowed(cfg, "acct_stranger")
 
 
 def test_catalog_host_is_optional():
@@ -117,3 +147,26 @@ def test_catalog_host_is_optional():
 def test_catalog_host_is_read_when_present():
     raw = dict(RAW, catalog_host="https://shop.example.com")
     assert load_config(raw).catalog_host == "https://shop.example.com"
+
+
+@pytest.mark.parametrize("catalog_host", [
+    ["https://shop.example.com"],
+    {"host": "https://shop.example.com"},
+    ("https://shop.example.com",),
+    123,
+    True,
+])
+def test_catalog_host_must_be_a_string_or_absent(catalog_host):
+    """The list form is the same hand-edit that once disabled a write guard.
+
+    Accepted silently, it dies later with AttributeError in the middle of a
+    run - over a cosmetic product label. Reject it at load time instead.
+    """
+    raw = dict(RAW, catalog_host=catalog_host)
+    with pytest.raises(ValueError, match="catalog_host"):
+        load_config(raw)
+
+
+@pytest.mark.parametrize("catalog_host", [None, ""])
+def test_an_empty_or_null_catalog_host_means_no_catalog_host(catalog_host):
+    assert load_config(dict(RAW, catalog_host=catalog_host)).catalog_host is None
