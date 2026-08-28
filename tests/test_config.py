@@ -59,3 +59,52 @@ def test_trade_policy_other_than_one_is_rejected():
     with pytest.raises(ValueError):
         load_config({"accounts": {"R1": "acct_one"}, "never_write": [],
                      "trade_policy": "2"})
+
+
+@pytest.mark.parametrize("never_write", [
+    "acct_master",
+    {"acct_master": True},
+    ["acct_master", 1],
+    1,
+])
+def test_never_write_must_be_a_list_or_tuple_of_strings(never_write):
+    raw = {**RAW, "never_write": never_write}
+    with pytest.raises(ValueError):
+        load_config(raw)
+
+
+@pytest.mark.parametrize("raw", [
+    {"accounts": {"R1": "acct_one"}, "never_write": None},
+    {"accounts": {"R1": "acct_one"}},
+])
+def test_missing_or_null_never_write_means_an_empty_tuple(raw):
+    assert load_config(raw).never_write == ()
+
+
+@pytest.mark.parametrize("source", [None, []])
+def test_non_mapping_config_source_is_rejected_cleanly(source):
+    with pytest.raises(ValueError, match="configuration source must be a mapping"):
+        load_config(source)
+
+
+def test_config_file_with_non_mapping_json_is_rejected_cleanly(tmp_path):
+    path = tmp_path / "accounts.json"
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="configuration source must be a mapping"):
+        load_config(str(path))
+
+
+@pytest.mark.parametrize("accounts", [
+    {1: "acct_one"},
+    {"R1": {"nested": "x"}},
+    {"R1": ""},
+])
+def test_accounts_must_map_string_keys_to_non_empty_string_values(accounts):
+    raw = {**RAW, "accounts": accounts}
+    with pytest.raises(ValueError, match="accounts"):
+        load_config(raw)
+
+
+def test_config_field_annotations_are_precise():
+    assert Config.__annotations__["accounts"] == dict[str, str]
+    assert Config.__annotations__["never_write"] == tuple[str, ...]
