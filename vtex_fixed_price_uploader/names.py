@@ -23,7 +23,23 @@ def _http_get_json(url, timeout=30):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def fetch_names(config, skus, workers=8, fetch=None):
+def _extract_name(products, sku) -> str:
+    """The SKU-level name, else the product name, else "".
+
+    Every access here can raise on a shape the catalog was not supposed to
+    return; the caller runs the whole thing inside its guard.
+    """
+    if not products:
+        return ""
+    product = products[0]
+    name = ""
+    for item in product.get("items") or []:
+        if str(item.get("itemId")) == str(sku):
+            name = item.get("nameComplete") or item.get("name") or ""
+    return name or product.get("productName") or ""
+
+
+def fetch_names(config, skus, workers=8, fetch=None) -> dict[str, str]:
     """{sku: product name}. Absent when unknown - never blank, never the SKU."""
     if not config.catalog_host:
         return {}
@@ -32,22 +48,19 @@ def fetch_names(config, skus, workers=8, fetch=None):
     out, lock = {}, threading.Lock()
 
     def work(sku):
-        url = "{}{}?{}".format(
-            config.catalog_host.rstrip("/"), SEARCH_PATH,
-            urllib.parse.urlencode(
-                {"fq": "skuId:{}".format(sku)}, safe=":"))
         try:
-            products = fetch(url)
+            url = "{}{}?{}".format(
+                config.catalog_host.rstrip("/"), SEARCH_PATH,
+                urllib.parse.urlencode(
+                    {"fq": "skuId:{}".format(sku)}, safe=":"))
+            name = _extract_name(fetch(url), sku)
         except Exception:
+            # Deliberately total. A gateway that answers an incident with a
+            # JSON error object instead of an array, a bare string body, a
+            # malformed items entry - none of it may take down a price
+            # preflight over a cosmetic label. No name is the right answer to
+            # every one of them.
             return
-        if not products:
-            return
-        product = products[0]
-        name = ""
-        for item in product.get("items") or []:
-            if str(item.get("itemId")) == str(sku):
-                name = item.get("nameComplete") or item.get("name") or ""
-        name = name or product.get("productName") or ""
         if name:
             with lock:
                 out[str(sku)] = name

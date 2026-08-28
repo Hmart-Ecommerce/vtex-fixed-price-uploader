@@ -1,3 +1,5 @@
+import pytest
+
 from vtex_fixed_price_uploader.config import load_config
 from vtex_fixed_price_uploader.names import fetch_names
 
@@ -56,3 +58,22 @@ def test_duplicate_skus_are_looked_up_once():
 
     fetch_names(CFG, ["111", "111", "111"], fetch=counting)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("shape", [
+    {"error": "bad"},                                 # JSON error object
+    ["oops"],                                         # array of strings
+    "not found",                                      # bare string body
+    [{"productName": "P", "items": ["x"]}],           # malformed items entry
+    None,                                             # null body
+])
+def test_a_malformed_response_shape_yields_no_name_not_an_exception(shape):
+    """A product name is cosmetic; no shape may ever abort the run."""
+    def odd(url, timeout=30):
+        return shape
+
+    assert fetch_names(CFG, ["111"], fetch=odd) == {}
+
+
+def test_fetch_names_declares_the_planned_return_annotation():
+    assert fetch_names.__annotations__["return"] == dict[str, str]
