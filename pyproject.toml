@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vtex-fixed-price-uploader"
+version = "0.1.0"
+description = "Validate and apply VTEX fixed prices from a wide CSV, with a pre-flight check"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+notebook = ["ipywidgets>=8"]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["vtex_fixed_price_uploader*"]
